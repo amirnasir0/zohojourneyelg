@@ -1,0 +1,1 @@
+This project implements PRD.md exactly. Fastify + Prisma + Postgres + Redis. No hardcoded tenant values — everything from tenant config. TypeScript strict."

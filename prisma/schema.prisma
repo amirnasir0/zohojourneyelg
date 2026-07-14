@@ -1,0 +1,112 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum StageHistorySource {
+  WEBHOOK
+  SYNC
+}
+
+model TenantConfig {
+  id        String   @id @default(uuid())
+  config    Json
+  version   Int      @default(1)
+  updatedAt DateTime @updatedAt
+
+  @@map("tenant_config")
+}
+
+model Contact {
+  id             String   @id @default(uuid())
+  zohoContactId  String   @unique @map("zoho_contact_id")
+  mobileE164     String   @unique @map("mobile_e164")
+  fullName       String?  @map("full_name")
+  email          String?
+  raw            Json
+  syncedAt       DateTime @map("synced_at")
+
+  journeys       Journey[]
+  sessions       Session[]
+  deviceTokens   DeviceToken[]
+
+  @@map("contacts")
+}
+
+model Journey {
+  id            String   @id @default(uuid())
+  zohoRecordId  String   @unique @map("zoho_record_id")
+  contactId     String   @map("contact_id")
+  name          String
+  stage         String
+  stageIndex    Int      @map("stage_index")
+  refValues     Json     @map("ref_values")
+  raw           Json
+  syncedAt      DateTime @map("synced_at")
+
+  contact       Contact       @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  stageHistory  StageHistory[]
+
+  @@map("journeys")
+}
+
+model StageHistory {
+  id         String             @id @default(uuid())
+  journeyId  String             @map("journey_id")
+  fromStage  String?            @map("from_stage")
+  toStage    String             @map("to_stage")
+  changedAt  DateTime           @map("changed_at")
+  source     StageHistorySource
+
+  journey    Journey @relation(fields: [journeyId], references: [id], onDelete: Cascade)
+
+  @@map("stage_history")
+}
+
+model OtpAttempt {
+  id         String   @id @default(uuid())
+  mobileE164 String   @map("mobile_e164")
+  attempts   Int      @default(0)
+  expiresAt  DateTime @map("expires_at")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@map("otp_attempts")
+}
+
+model Session {
+  id         String    @id @default(uuid())
+  contactId  String    @map("contact_id")
+  jti        String    @unique
+  expiresAt  DateTime  @map("expires_at")
+  revokedAt  DateTime? @map("revoked_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+
+  contact    Contact @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+}
+
+model DeviceToken {
+  id         String   @id @default(uuid())
+  contactId  String   @map("contact_id")
+  token      String
+  platform   String
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  contact    Contact @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  @@map("device_tokens")
+}
+
+// Single-row table tracking the sync worker's last successful run (M3 populates it).
+model SyncStatus {
+  id            String    @id @default(uuid())
+  lastSuccessAt DateTime? @map("last_success_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  @@map("sync_status")
+}

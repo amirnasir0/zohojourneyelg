@@ -1,0 +1,69 @@
+{
+  "tenant": {
+    "slug": "elgris",
+    "display_name": "Elgris Solar",
+    "logo_url": "https://cdn.elgris.in/branding/elgris-logo.png",
+    "brand_colors": { "primary": "#F5A623", "secondary": "#1B2A4A" },
+    "support_whatsapp": "+919999999999",
+    "support_email": "support@elgris.in"
+  },
+  "zoho": {
+    "dc": "in",
+    "org_id": "60000000001",
+    "journey_module": "Deals",
+    "contact_phone_fields": ["Phone", "Mobile"]
+  },
+  "journey": {
+    "label_singular": "Project",
+    "label_plural": "Projects",
+    "stages": [
+      {
+        "index": 1,
+        "crm_value": "Site Survey",
+        "display": "Site Survey",
+        "owner": "elgris",
+        "next_copy": "Our engineer will visit your site within 3 working days. Please keep your latest electricity bill ready."
+      },
+      {
+        "index": 2,
+        "crm_value": "Design & Quotation",
+        "display": "Design & Quotation",
+        "owner": "elgris",
+        "next_copy": "We are preparing your system design and quotation based on the site survey."
+      },
+      {
+        "index": 13,
+        "crm_value": "Installation In Progress",
+        "display": "Installation In Progress",
+        "owner": "elgris",
+        "next_copy": "Our installation team is on site fitting your solar panels and inverter."
+      },
+      {
+        "index": 14,
+        "crm_value": "Net Meter Installation",
+        "display": "Net Meter Installation",
+        "owner": "discom",
+        "next_copy": "DISCOM will install your net meter. This typically takes 10-15 days and is handled by the electricity board."
+      },
+      {
+        "index": 24,
+        "crm_value": "Subsidy Disbursed",
+        "display": "Subsidy Disbursed",
+        "owner": "elgris",
+        "next_copy": "Your subsidy has been disbursed. Your solar journey is now complete."
+      }
+    ]
+  },
+  "reference_fields": [
+    { "crm_field": "National_Portal_No", "display": "National Portal Application No." },
+    { "crm_field": "Subsidy_Token", "display": "Subsidy Token" },
+    { "crm_field": "Consumer_No", "display": "Consumer Number" },
+    { "crm_field": "DISCOM_No", "display": "DISCOM Number" }
+  ],
+  "notifications": {
+    "otp_channel": ["whatsapp", "sms_fallback"],
+    "interakt_otp_template": "otp_auth_v1",
+    "stage_change_push": "Update on your {journey_label}: now at {stage}. Tap to see details.",
+    "stage_change_whatsapp_template": null
+  }
+}
