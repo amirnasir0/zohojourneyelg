@@ -1,13 +1,22 @@
 import Fastify from 'fastify';
+import { loadTenantConfig } from './config/loader.js';
 import { prisma } from './lib/prisma.js';
 import { redis } from './lib/redis.js';
+import { registerAuthRoutes } from './routes/auth.js';
 import { registerHealthzRoutes } from './routes/healthz.js';
 
 const app = Fastify({
   logger: true,
 });
 
+const tenantConfigPath = process.env.TENANT_CONFIG_PATH;
+if (!tenantConfigPath) {
+  throw new Error('TENANT_CONFIG_PATH env var is required');
+}
+app.decorate('tenantConfig', loadTenantConfig(tenantConfigPath));
+
 await registerHealthzRoutes(app);
+await registerAuthRoutes(app);
 
 app.addHook('onClose', async () => {
   await prisma.$disconnect();

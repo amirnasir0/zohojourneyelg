@@ -25,6 +25,7 @@ model Contact {
   id             String   @id @default(uuid())
   zohoContactId  String   @unique @map("zoho_contact_id")
   mobileE164     String   @unique @map("mobile_e164")
+  altMobileE164  String?  @map("alt_mobile_e164")
   fullName       String?  @map("full_name")
   email          String?
   raw            Json
@@ -34,6 +35,7 @@ model Contact {
   sessions       Session[]
   deviceTokens   DeviceToken[]
 
+  @@index([altMobileE164])
   @@map("contacts")
 }
 
