@@ -19,6 +19,9 @@ const zohoSchema = z.object({
   org_id: z.string().min(1),
   journey_module: z.string().min(1),
   contact_phone_fields: z.array(z.string().min(1)).min(1),
+  journey_stage_field: z.string().min(1),
+  journey_name_field: z.string().min(1),
+  journey_contact_lookup_field: z.string().min(1),
 });
 
 const stageSchema = z.object({

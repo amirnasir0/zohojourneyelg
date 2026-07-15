@@ -11,7 +11,10 @@
     "dc": "in",
     "org_id": "60000000001",
     "journey_module": "Deals",
-    "contact_phone_fields": ["Phone", "Mobile"]
+    "contact_phone_fields": ["Phone", "Mobile"],
+    "journey_stage_field": "Stage",
+    "journey_name_field": "Deal_Name",
+    "journey_contact_lookup_field": "Contact_Name"
   },
   "journey": {
     "label_singular": "Project",
@@ -54,12 +57,7 @@
       }
     ]
   },
-  "reference_fields": [
-    { "crm_field": "National_Portal_No", "display": "National Portal Application No." },
-    { "crm_field": "Subsidy_Token", "display": "Subsidy Token" },
-    { "crm_field": "Consumer_No", "display": "Consumer Number" },
-    { "crm_field": "DISCOM_No", "display": "DISCOM Number" }
-  ],
+  "reference_fields": [],
   "notifications": {
     "otp_channel": ["whatsapp", "sms_fallback"],
     "interakt_otp_template": "Otp_varify",

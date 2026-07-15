@@ -4,6 +4,7 @@ import { prisma } from './lib/prisma.js';
 import { redis } from './lib/redis.js';
 import { registerAuthRoutes } from './routes/auth.js';
 import { registerHealthzRoutes } from './routes/healthz.js';
+import { startSyncScheduler } from './sync/scheduler.js';
 
 const app = Fastify({
   logger: true,
@@ -17,6 +18,8 @@ app.decorate('tenantConfig', loadTenantConfig(tenantConfigPath));
 
 await registerHealthzRoutes(app);
 await registerAuthRoutes(app);
+
+startSyncScheduler(app.tenantConfig);
 
 app.addHook('onClose', async () => {
   await prisma.$disconnect();

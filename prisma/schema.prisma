@@ -45,7 +45,7 @@ model Journey {
   contactId     String   @map("contact_id")
   name          String
   stage         String
-  stageIndex    Int      @map("stage_index")
+  stageIndex    Int?     @map("stage_index")
   refValues     Json     @map("ref_values")
   raw           Json
   syncedAt      DateTime @map("synced_at")
@@ -104,11 +104,34 @@ model DeviceToken {
   @@map("device_tokens")
 }
 
-// Single-row table tracking the sync worker's last successful run (M3 populates it).
-model SyncStatus {
-  id            String    @id @default(uuid())
-  lastSuccessAt DateTime? @map("last_success_at")
-  updatedAt     DateTime  @updatedAt @map("updated_at")
+// One row per sync stream ('incremental' | 'full_reconcile'). Feeds /healthz/sync.
+model SyncState {
+  id                String    @id @default(uuid())
+  key               String    @unique
+  watermark         DateTime?
+  lastRunAt         DateTime? @map("last_run_at")
+  lastRunStatus     String?   @map("last_run_status")
+  contactsProcessed Int       @default(0) @map("contacts_processed")
+  journeysProcessed Int       @default(0) @map("journeys_processed")
+  issuesCount       Int       @default(0) @map("issues_count")
+  updatedAt         DateTime  @updatedAt @map("updated_at")
 
-  @@map("sync_status")
+  @@map("sync_state")
+}
+
+// Diagnostic log: bad phone numbers, unknown stages, orphan journeys, duplicate mobiles.
+// Deduped on (zohoRecordId, field, reason) via skipDuplicates — one row per
+// distinct problem, not one row per occurrence across every sync run.
+model SyncIssue {
+  id           String   @id @default(uuid())
+  zohoRecordId String?  @map("zoho_record_id")
+  recordType   String   @map("record_type")
+  field        String?
+  rawValue     String?  @map("raw_value")
+  reason       String
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@unique([zohoRecordId, field, reason])
+  @@index([recordType, createdAt])
+  @@map("sync_issues")
 }

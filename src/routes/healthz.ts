@@ -3,6 +3,9 @@ import { prisma } from '../lib/prisma.js';
 import { redis } from '../lib/redis.js';
 
 const REDIS_PING_TIMEOUT_MS = 2000;
+// PRD §15: alert if last sync > 30 min. Full reconcile only runs nightly, so it needs a wider window.
+const INCREMENTAL_STALE_THRESHOLD_MS = 30 * 60 * 1000;
+const FULL_RECONCILE_STALE_THRESHOLD_MS = 25 * 60 * 60 * 1000;
 
 function pingWithTimeout(timeoutMs: number): Promise<unknown> {
   return Promise.race([
@@ -33,7 +36,37 @@ export async function registerHealthzRoutes(app: FastifyInstance) {
   });
 
   app.get('/healthz/sync', async (_req, reply) => {
-    const status = await prisma.syncStatus.findFirst();
-    return reply.code(200).send({ lastSyncAt: status?.lastSuccessAt ?? null });
+    const [incremental, fullReconcile] = await Promise.all([
+      prisma.syncState.findUnique({ where: { key: 'incremental' } }),
+      prisma.syncState.findUnique({ where: { key: 'full_reconcile' } }),
+    ]);
+
+    const isStale = (lastRunAt: Date | null | undefined, thresholdMs: number): boolean => {
+      if (!lastRunAt) return true;
+      return Date.now() - lastRunAt.getTime() > thresholdMs;
+    };
+
+    return reply.code(200).send({
+      incremental: incremental
+        ? {
+            watermark: incremental.watermark,
+            lastRunAt: incremental.lastRunAt,
+            lastRunStatus: incremental.lastRunStatus,
+            contactsProcessed: incremental.contactsProcessed,
+            journeysProcessed: incremental.journeysProcessed,
+            issuesCount: incremental.issuesCount,
+            stale: isStale(incremental.lastRunAt, INCREMENTAL_STALE_THRESHOLD_MS),
+          }
+        : null,
+      fullReconcile: fullReconcile
+        ? {
+            lastRunAt: fullReconcile.lastRunAt,
+            lastRunStatus: fullReconcile.lastRunStatus,
+            contactsProcessed: fullReconcile.contactsProcessed,
+            journeysProcessed: fullReconcile.journeysProcessed,
+            stale: isStale(fullReconcile.lastRunAt, FULL_RECONCILE_STALE_THRESHOLD_MS),
+          }
+        : null,
+    });
   });
 }

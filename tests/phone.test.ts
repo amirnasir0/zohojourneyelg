@@ -9,6 +9,10 @@ describe('normalizePhone', () => {
     ['09876543210', '+919876543210'],
     ['(98) 765-432 10', '+919876543210'],
     ['0919876543210', '+919876543210'],
+    // regression: a bare 10-digit number that happens to start with "91" is
+    // a complete valid number, not a 91-country-code-prefixed 8-digit one
+    ['9158500015', '+919158500015'],
+    ['9158144345', '+919158144345'],
   ])('normalizes %s to %s', (input, expected) => {
     expect(normalizePhone(input)).toBe(expected);
   });

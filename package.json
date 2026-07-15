@@ -13,18 +13,23 @@
     "test": "vitest run",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
-    "generate:jwt-keys": "tsx src/scripts/generate-jwt-keys.ts"
+    "generate:jwt-keys": "tsx src/scripts/generate-jwt-keys.ts",
+    "zoho:authorize": "tsx src/scripts/zoho-authorize.ts",
+    "sync:once": "tsx src/scripts/sync-once.ts",
+    "sync:reconcile": "tsx src/scripts/reconcile-once.ts"
   },
   "dependencies": {
     "@prisma/client": "^5.20.0",
     "fastify": "^4.28.1",
     "ioredis": "^5.11.1",
     "jose": "^6.2.3",
+    "node-cron": "^4.6.0",
     "pino": "^9.4.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {
     "@types/node": "^20.16.5",
+    "@types/node-cron": "^3.0.11",
     "ioredis-mock": "^8.13.1",
     "prisma": "^5.20.0",
     "tsx": "^4.19.1",
