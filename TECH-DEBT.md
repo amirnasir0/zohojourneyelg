@@ -60,3 +60,38 @@ real fix (e.g. batched/bulk writes to cut round-trips) rather than more retries.
 Bootstrap incomplete (~549 journeys missing) + write-path fixes (pooler params, batched writes, SyncIssue
 dedupe+purge, P1017 reconnect) pending — must complete before production deploy. Nightly reconcile will
 heal the gap once fixes land.
+
+## M4 read-path latency: ~1s per request, target is <100ms
+
+Live-tested `/me` (2 logical queries: session lookup in `requireAuth` + contact lookup) at a steady
+**~1.05-1.1s**, cold and warm, 5 consecutive requests, no Redis involved. 10-15x over the PRD §12 target.
+
+**Diagnosed, not guessed** — two checks, both against the real dev DB:
+
+1. Prisma query event logging (`log: [{emit:'event', level:'query'}]`) on a single `contact.findUnique`
+   shows it is not one round trip, it's **four**: `BEGIN` (~105ms) → `DEALLOCATE ALL` (~105ms) → the actual
+   `SELECT` (~215ms) → `COMMIT` (~115ms). Every one of those individually costs 100ms+, which is not
+   plausible as server-side execution time for a bare `BEGIN`/`COMMIT` — that's wire time, not query
+   planning. `pgbouncer=true` (added in M3 to stop connection drops under sustained sync writes) makes
+   Prisma wrap every single query in an explicit transaction plus a defensive `DEALLOCATE ALL`, because
+   PgBouncer's transaction-pooling mode can't guarantee prepared-statement continuity across pooled
+   connections. That's 4 round trips per logical query instead of 1.
+2. `pg_stat_activity` during the same test showed exactly **one** backend connection
+   (`application_name: pgbouncer`, alive 14+ minutes) — connections are being reused correctly, not
+   re-established per request. That hypothesis is ruled out.
+3. A raw TCP+TLS connect to the Neon host measured **290ms** — real network RTT from a dev laptop to
+   `ap-southeast-1`, consistent with the 4-round-trips-per-query math (`/me`'s ~1.05s ≈ 2 queries × 4 round
+   trips × ~130ms average).
+
+So: not statement re-planning, not connection churn — round-trip count amplified by long-haul RTT. Every
+dev-laptop measurement in this repo (M3's sync timings included) has paid this same tax; it looks
+different in production only because Railway (Singapore) sits next to Neon (`ap-southeast-1`), not across
+an ocean from it.
+
+**Action item**: this must be re-measured post-deploy from Railway Singapore before drawing conclusions —
+p95 latency numbers from a dev laptop are not representative. If it's still >100ms from Railway (i.e. the
+4-round-trips-per-query cost itself, not the RTT, turns out to matter even at near-zero latency), the fix
+is a **second, non-pooled `DATABASE_URL`** for the API's read path (the pooled+`pgbouncer=true` URL stays
+in place for the sync worker's writes, which is what it was added for). Neon supports both URLs
+concurrently against the same database — no migration, just a second env var and a second Prisma client
+(or datasource) for reads. Not implemented; infrastructure changes are on hold pending explicit approval.

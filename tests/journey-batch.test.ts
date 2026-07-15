@@ -1,6 +1,10 @@
-import { describe, expect, it } from 'vitest';
-import { planJourneyBatch } from '../src/sync/journey-batch.js';
+import RedisMock from 'ioredis-mock';
+import { describe, expect, it, vi } from 'vitest';
 import type { TenantConfig } from '../src/config/types.js';
+
+vi.mock('../src/lib/redis.js', () => ({ redis: new RedisMock() }));
+
+const { planJourneyBatch } = await import('../src/sync/journey-batch.js');
 
 const tenantConfig: TenantConfig = {
   tenant: {
@@ -23,7 +27,7 @@ const tenantConfig: TenantConfig = {
   journey: {
     label_singular: 'Project',
     label_plural: 'Projects',
-    stages: [{ index: 1, crm_value: 'Site Survey', display: 'Site Survey', owner: 'elgris', next_copy: 'x' }],
+    stages: [{ type: 'journey', index: 1, crm_value: 'Site Survey', display: 'Site Survey', owner: 'elgris', next_copy: 'x' }],
   },
   reference_fields: [{ crm_field: 'National_Portal_No', display: 'National Portal No.' }],
   notifications: {

@@ -13,7 +13,7 @@ import { validateZohoFieldMapping } from './validate-fields.js';
  */
 export function startSyncScheduler(tenantConfig: TenantConfig): void {
   if (process.env.ENABLE_SYNC === 'false') {
-    console.log('[sync] ENABLE_SYNC=false, scheduler not started');
+    console.log('[sync] sync scheduler disabled via ENABLE_SYNC');
     return;
   }
 

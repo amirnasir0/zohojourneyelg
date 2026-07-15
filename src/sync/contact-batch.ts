@@ -1,4 +1,5 @@
 import { Prisma } from '@prisma/client';
+import { invalidateJourneysCache } from '../lib/journeys-cache.js';
 import { prisma } from '../lib/prisma.js';
 import type { ZohoRecord } from '../lib/zoho-client.js';
 import { ingestContactPhones } from './phone-ingest.js';
@@ -114,7 +115,7 @@ export async function writeContactBatch(rawRecords: ZohoRecord[], phoneFields: s
   const { upserts, issues } = planContactBatch(rawRecords, phoneFields, existingMobileOwners);
 
   if (upserts.length > 0) {
-    await withBatchRetry(() =>
+    const results = await withBatchRetry(() =>
       prisma.$transaction(
         upserts.map((item) =>
           prisma.contact.upsert({
@@ -140,6 +141,8 @@ export async function writeContactBatch(rawRecords: ZohoRecord[], phoneFields: s
         ),
       ),
     );
+
+    await Promise.all(results.map((c) => invalidateJourneysCache(c.id)));
   }
 
   if (issues.length > 0) {

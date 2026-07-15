@@ -24,13 +24,36 @@ const zohoSchema = z.object({
   journey_contact_lookup_field: z.string().min(1),
 });
 
-const stageSchema = z.object({
-  index: z.number().int().positive(),
+// Elgris's Deals pipeline mixes sales stages, installation-journey stages, and
+// terminal states. Only "journey" stages render in the customer timeline and
+// count toward total_stages; the others (pre_journey/on_hold/hidden) are
+// display-shaped differently by the API (see src/lib/journey-view.ts).
+const nonJourneyStageFields = {
   crm_value: z.string().min(1),
+  index: z.number().int().positive().optional(),
+  display: z.string().min(1).optional(),
+  owner: z.string().min(1).optional(),
+  next_copy: z.string().min(1).optional(),
+  // Flags a type assignment as a guess pending tenant confirmation — not read
+  // by app code, just a marker for humans editing the config.
+  _review: z.boolean().optional(),
+};
+
+const journeyStageSchema = z.object({
+  type: z.literal('journey'),
+  crm_value: z.string().min(1),
+  index: z.number().int().positive(),
   display: z.string().min(1),
   owner: z.string().min(1),
   next_copy: z.string().min(1),
+  _review: z.boolean().optional(),
 });
+
+const preJourneyStageSchema = z.object({ type: z.literal('pre_journey'), ...nonJourneyStageFields });
+const onHoldStageSchema = z.object({ type: z.literal('on_hold'), ...nonJourneyStageFields });
+const hiddenStageSchema = z.object({ type: z.literal('hidden'), ...nonJourneyStageFields });
+
+const stageSchema = z.discriminatedUnion('type', [journeyStageSchema, preJourneyStageSchema, onHoldStageSchema, hiddenStageSchema]);
 
 const journeySchema = z.object({
   label_singular: z.string().min(1),

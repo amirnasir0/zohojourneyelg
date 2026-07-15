@@ -1,5 +1,9 @@
-import { describe, expect, it } from 'vitest';
-import { planContactBatch } from '../src/sync/contact-batch.js';
+import RedisMock from 'ioredis-mock';
+import { describe, expect, it, vi } from 'vitest';
+
+vi.mock('../src/lib/redis.js', () => ({ redis: new RedisMock() }));
+
+const { planContactBatch } = await import('../src/sync/contact-batch.js');
 
 const PHONE_FIELDS = ['Phone', 'Mobile'];
 

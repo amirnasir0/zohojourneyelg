@@ -1,5 +1,6 @@
 import { Prisma } from '@prisma/client';
 import type { TenantConfig } from '../config/types.js';
+import { invalidateJourneysCache } from '../lib/journeys-cache.js';
 import { prisma } from '../lib/prisma.js';
 import type { ZohoRecord } from '../lib/zoho-client.js';
 import { resolveStageIndex } from './stage-resolve.js';
@@ -149,6 +150,9 @@ export async function writeJourneyBatch(rawRecords: ZohoRecord[], tenantConfig: 
         ),
       ),
     );
+
+    const affectedContactIds = new Set(upserts.map((item) => item.contactId));
+    await Promise.all([...affectedContactIds].map((id) => invalidateJourneysCache(id)));
   }
 
   if (issues.length > 0) {

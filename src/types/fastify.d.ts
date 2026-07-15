@@ -4,4 +4,7 @@ declare module 'fastify' {
   interface FastifyInstance {
     tenantConfig: TenantConfig;
   }
+  interface FastifyRequest {
+    contactId: string;
+  }
 }

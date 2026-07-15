@@ -3,7 +3,9 @@ import { loadTenantConfig } from './config/loader.js';
 import { prisma } from './lib/prisma.js';
 import { redis } from './lib/redis.js';
 import { registerAuthRoutes } from './routes/auth.js';
+import { registerConfigRoutes } from './routes/config.js';
 import { registerHealthzRoutes } from './routes/healthz.js';
+import { registerMeRoutes } from './routes/me.js';
 import { startSyncScheduler } from './sync/scheduler.js';
 
 const app = Fastify({
@@ -18,6 +20,8 @@ app.decorate('tenantConfig', loadTenantConfig(tenantConfigPath));
 
 await registerHealthzRoutes(app);
 await registerAuthRoutes(app);
+await registerConfigRoutes(app);
+await registerMeRoutes(app);
 
 startSyncScheduler(app.tenantConfig);
 

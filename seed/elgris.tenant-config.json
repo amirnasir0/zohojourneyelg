@@ -21,6 +21,7 @@
     "label_plural": "Projects",
     "stages": [
       {
+        "type": "journey",
         "index": 1,
         "crm_value": "Site Survey",
         "display": "Site Survey",
@@ -28,6 +29,7 @@
         "next_copy": "Our engineer will visit your site within 3 working days. Please keep your latest electricity bill ready."
       },
       {
+        "type": "journey",
         "index": 2,
         "crm_value": "Design & Quotation",
         "display": "Design & Quotation",
@@ -35,6 +37,7 @@
         "next_copy": "We are preparing your system design and quotation based on the site survey."
       },
       {
+        "type": "journey",
         "index": 13,
         "crm_value": "Installation In Progress",
         "display": "Installation In Progress",
@@ -42,6 +45,7 @@
         "next_copy": "Our installation team is on site fitting your solar panels and inverter."
       },
       {
+        "type": "journey",
         "index": 14,
         "crm_value": "Net Meter Installation",
         "display": "Net Meter Installation",
@@ -49,11 +53,78 @@
         "next_copy": "DISCOM will install your net meter. This typically takes 10-15 days and is handled by the electricity board."
       },
       {
+        "type": "journey",
         "index": 24,
         "crm_value": "Subsidy Disbursed",
         "display": "Subsidy Disbursed",
         "owner": "elgris",
         "next_copy": "Your subsidy has been disbursed. Your solar journey is now complete."
+      },
+      {
+        "type": "pre_journey",
+        "crm_value": "Identify Decision Makers",
+        "display": "Identify Decision Makers"
+      },
+      {
+        "type": "pre_journey",
+        "crm_value": "Need Proposal",
+        "display": "Need Proposal"
+      },
+      {
+        "type": "pre_journey",
+        "crm_value": "Visit Required Immediate",
+        "display": "Visit Required Immediate"
+      },
+      {
+        "type": "pre_journey",
+        "crm_value": "Visit Required After sometime",
+        "display": "Visit Required After Sometime"
+      },
+      {
+        "type": "pre_journey",
+        "crm_value": "Visit Done",
+        "display": "Visit Done"
+      },
+      {
+        "type": "pre_journey",
+        "crm_value": "Proposal Given",
+        "display": "Proposal Given"
+      },
+      {
+        "type": "pre_journey",
+        "crm_value": "Follow Up/ Negotiation",
+        "display": "Follow Up / Negotiation"
+      },
+      {
+        "type": "pre_journey",
+        "crm_value": "Closed Won",
+        "display": "Closed Won",
+        "_review": true
+      },
+      {
+        "type": "on_hold",
+        "crm_value": "Hold",
+        "display": "On Hold"
+      },
+      {
+        "type": "hidden",
+        "crm_value": "Closed Lost",
+        "display": "Closed Lost"
+      },
+      {
+        "type": "hidden",
+        "crm_value": "Closed lost to Competitors",
+        "display": "Closed Lost to Competitors"
+      },
+      {
+        "type": "hidden",
+        "crm_value": "Low Bill/Not Qualified",
+        "display": "Low Bill / Not Qualified"
+      },
+      {
+        "type": "hidden",
+        "crm_value": "Out of Solapur District",
+        "display": "Out of Solapur District"
       }
     ]
   },
