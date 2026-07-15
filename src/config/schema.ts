@@ -73,10 +73,31 @@ const notificationsSchema = z.object({
   stage_change_whatsapp_template: z.string().nullable(),
 });
 
+// Zoho Workflow webhook JSON bodies are configured by whoever sets up the
+// Workflow Rule on the Zoho side (see docs/ZOHO-WEBHOOK-SETUP.md) — the exact
+// key names are their choice, not ours, so they're tenant config rather than
+// hardcoded in the handler (per CLAUDE.md: no hardcoded tenant values).
+const journeyUpdatedWebhookSchema = z.object({
+  record_id_field: z.string().min(1),
+  stage_field: z.string().min(1),
+  contact_id_field: z.string().min(1),
+  changed_at_field: z.string().min(1),
+});
+
+const contactUpdatedWebhookSchema = z.object({
+  record_id_field: z.string().min(1),
+});
+
+const webhooksSchema = z.object({
+  journey_updated: journeyUpdatedWebhookSchema,
+  contact_updated: contactUpdatedWebhookSchema,
+});
+
 export const tenantConfigSchema = z.object({
   tenant: tenantSchema,
   zoho: zohoSchema,
   journey: journeySchema,
   reference_fields: z.array(referenceFieldSchema),
   notifications: notificationsSchema,
+  webhooks: webhooksSchema,
 });

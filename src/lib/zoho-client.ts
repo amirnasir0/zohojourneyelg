@@ -47,6 +47,7 @@ export interface ZohoField {
 
 export interface ZohoClient {
   getRecords(module: string, opts: { fields: string[]; sinceIso?: string }): Promise<ZohoRecord[]>;
+  getRecord(module: string, id: string, fields: string[]): Promise<ZohoRecord | null>;
   getModuleFields(module: string): Promise<ZohoField[]>;
 }
 
@@ -188,6 +189,27 @@ class ZohoApiClient implements ZohoClient {
 
     console.log(`[zoho-client] ${module}: pagination complete, ${records.length} records total`);
     return records;
+  }
+
+  /**
+   * Single-record fetch by ID — used by webhook handlers when the notified
+   * record doesn't exist locally yet, instead of running a full sync pass.
+   */
+  async getRecord(module: string, id: string, fields: string[]): Promise<ZohoRecord | null> {
+    const params = new URLSearchParams({ fields: fields.join(',') });
+    const res = await this.request(`/crm/v8/${module}/${encodeURIComponent(id)}?${params.toString()}`);
+
+    if (res.status === 404) {
+      return null;
+    }
+
+    if (!res.ok) {
+      const body = await res.text().catch(() => '<unreadable body>');
+      throw new Error(`Zoho getRecord failed: module=${module} id=${id} status=${res.status} body=${body}`);
+    }
+
+    const data = (await res.json()) as { data?: ZohoRecord[] };
+    return data.data?.[0] ?? null;
   }
 
   async getModuleFields(module: string): Promise<ZohoField[]> {

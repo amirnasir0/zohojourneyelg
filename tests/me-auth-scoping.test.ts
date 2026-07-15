@@ -57,6 +57,10 @@ const tenantConfig: TenantConfig = {
     stage_change_push: 'x',
     stage_change_whatsapp_template: null,
   },
+  webhooks: {
+    journey_updated: { record_id_field: 'record_id', stage_field: 'stage', contact_id_field: 'contact_id', changed_at_field: 'changed_at' },
+    contact_updated: { record_id_field: 'record_id' },
+  },
 };
 
 async function buildApp() {

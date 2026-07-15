@@ -63,6 +63,11 @@ model StageHistory {
   toStage    String             @map("to_stage")
   changedAt  DateTime           @map("changed_at")
   source     StageHistorySource
+  // `${journeyId}:${toStage}:${minuteBucket}` — real DB-level idempotency for
+  // webhook redelivery (PRD §11.2: dedupe on record_id + to_stage + minute
+  // bucket) instead of a race-prone check-then-insert. A duplicate delivery
+  // hits this unique constraint (P2002), caught and treated as a no-op.
+  dedupeKey  String             @unique @map("dedupe_key")
 
   journey    Journey @relation(fields: [journeyId], references: [id], onDelete: Cascade)
 
