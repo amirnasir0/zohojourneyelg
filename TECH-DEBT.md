@@ -95,3 +95,9 @@ is a **second, non-pooled `DATABASE_URL`** for the API's read path (the pooled+`
 in place for the sync worker's writes, which is what it was added for). Neon supports both URLs
 concurrently against the same database — no migration, just a second env var and a second Prisma client
 (or datasource) for reads. Not implemented; infrastructure changes are on hold pending explicit approval.
+
+## M5 Zoho-side webhook chain untested (deferred to Railway deploy)
+
+Zoho-side webhook chain untested (merge-field substitution, JSON body type, query-param secret, trigger
+condition, real delivery) — all doc assumptions. Validate during Railway deploy following
+`docs/ZOHO-WEBHOOK-SETUP.md`; handler logic itself fully tested via simulated payloads.

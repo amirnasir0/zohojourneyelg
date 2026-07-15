@@ -1,5 +1,32 @@
 # Zoho CRM Webhook Setup
 
+## Deploy-day validation checklist
+
+The handler code (payload parsing, stage resolution, `StageHistory` writes, dedupe, cache invalidation,
+both fetch-by-ID fallback paths) is fully tested — but only against **simulated** deliveries (curl payloads
+built by hand to match the expected shape). The Zoho-side half of the chain has not been exercised end to
+end because there's been no CRM access to create the Workflow Rules. Everything below is a documented
+*assumption*, not a confirmed behavior. Check off each one for real during the Railway deploy:
+
+- [ ] **JSON body type** — confirm the Workflow Rule's webhook editor actually sends JSON, not
+      URL-encoded form params (Zoho's editor can default to form-encoding depending on how fields were
+      added — see the warning under Rule 1 below).
+- [ ] **Merge-field substitution** — confirm `${Deals.Deal Id}`, `${Deals.Stage}`,
+      `${Deals.Contact Name.id}`, `${Deals.Modified Time}` (and `${Contacts.Contact Id}`) actually resolve
+      to the values/format expected — e.g. that `Contact Name.id` really is a plain string and not a
+      nested object, and that `Modified Time` is a parseable timestamp.
+- [ ] **Query-param secret** — confirm Zoho's webhook sender preserves a `?secret=...` query string on
+      the configured URL rather than stripping or mangling it.
+- [ ] **Trigger condition** — confirm "Edit action, only when Stage field is modified" actually fires
+      once per real stage change (not on every unrelated field edit, not zero times, not duplicated).
+- [ ] **Real delivery** — confirm an actual CRM edit reaches the deployed endpoint at all (network
+      path, DNS, TLS, whatever's in front of the Railway deployment) and that the response Zoho receives
+      matches what the handler actually sent.
+
+See `TECH-DEBT.md` → "M5 Zoho-side webhook chain untested" for the standing note.
+
+---
+
 M5 adds two endpoints that Zoho CRM calls directly on record changes, for near-instant updates instead of
 waiting up to 15 minutes for the next sync pass:
 
