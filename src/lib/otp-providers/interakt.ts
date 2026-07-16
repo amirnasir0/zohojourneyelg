@@ -30,7 +30,14 @@ export class InteraktProvider implements OtpProvider {
           template: {
             name: this.template,
             languageCode: 'en',
+            // Authentication-category templates (copy-code / one-tap / zero-tap)
+            // require the same OTP in both bodyValues and buttonValues — the
+            // button's "Copy Code" component has its own variable slot,
+            // separate from the body placeholder. Omitting buttonValues is
+            // what produced "Missing variable values for template's button
+            // at index 0" from Interakt live.
             bodyValues: [otp],
+            buttonValues: { '0': [otp] },
           },
         }),
       });

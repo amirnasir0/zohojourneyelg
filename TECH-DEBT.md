@@ -174,14 +174,13 @@ one concretely-open item — low urgency since exploiting it requires crafting a
 specifically to smuggle a body past validation, on routes that are already OTP-rate-limited or
 secret-gated.
 
-## Interakt WhatsApp OTP delivery never actually worked — two real bugs found live
+## Interakt WhatsApp OTP delivery — fixed and live-confirmed (16 Jul)
 
-M7b's fix to `interakt.ts`/`msg91.ts` (fail-closed OTP-stub logging outside `NODE_ENV=development`) had a
-side effect nobody intended: it made the app stop silently faking OTP-send success. That immediately surfaced
-that **WhatsApp OTP delivery via Interakt has never actually worked** for Elgris — masked until now because
-the old stub logging path faked `success:true` any time `NODE_ENV=development`, and the app has apparently
-only ever been exercised in that mode. Two distinct, real bugs found via a live test against
-`+919760341277` (`NODE_ENV=production` so nothing could stub-fake a result):
+M7b's fail-closed fix to `interakt.ts`/`msg91.ts` (no more stub-faking OTP-send success outside
+`NODE_ENV=development`) surfaced that **WhatsApp OTP delivery via Interakt had never actually worked** for
+Elgris — masked until then because the old stub path faked `success:true` any time `NODE_ENV=development`,
+and the app had apparently only ever been exercised in that mode. Two distinct, real bugs found via live
+tests against `+919760341277` (`NODE_ENV=production` so nothing could stub-fake a result):
 
 1. **Template name typo** — `seed/elgris.tenant-config.json`'s `notifications.interakt_otp_template` was
    `"Otp_varify"` (capital O); Interakt returned `400 {"result":false,"message":"No approved template found
@@ -190,21 +189,17 @@ only ever been exercised in that mode. Two distinct, real bugs found via a live 
 
 2. **Missing button variable value** — after the name fix, Interakt returned a *different* `400`:
    `{"result":false,"message":"Missing variable values for template's button at index 0, expected number of
-   values are 1"}`. The `otp_varify` template has a button component (near-certainly a WhatsApp "Copy Code"
-   button, standard for authentication-category OTP templates) that requires its own variable value, sent
-   separately from the body placeholder. `InteraktProvider.send()` in `src/lib/otp-providers/interakt.ts`
-   only sends `template.bodyValues: [otp]` — no button-values field at all. **Not fixed** — needs Interakt's
-   template-message API docs to find the correct field name/shape for button variables (guessing the field
-   name risked another silent-wrong-payload bug of exactly this kind), then a live re-test to confirm real
-   WhatsApp delivery.
+   values are 1"}`. The `otp_varify` template has a "Copy Code" button component (standard for
+   authentication-category WhatsApp templates) requiring its own variable value, separate from the body
+   placeholder. Per Interakt's own docs (send-whatsapp-authentication-template), authentication templates need
+   the *same* OTP in both `template.bodyValues` and `template.buttonValues: {"0": [otp]}` — `interakt.ts` was
+   only sending `bodyValues`. Fixed by adding the matching `buttonValues` field.
 
-MSG91 SMS fallback was separately confirmed to have no API key configured at all
-(`MSG91_API_KEY` unset in `.env`) — so today, in production conditions, `/auth/send-otp` would
-correctly return `502 SEND_FAILED` rather than a false-positive success (fail-closed working as designed),
-but **no OTP can currently be delivered to any customer by any channel**. This blocks the app's actual
-login flow and needs fixing before deploy — separate from and higher-priority than anything in M7b's
-security-hardening scope.
+Both fixes verified with a real live send: `200 {"success":true,"channel":"whatsapp"}`, no errors in the
+server log, and **confirmed received on the actual device** (not just a 200 response — the operator
+independently confirmed the WhatsApp message arrived). OTP delivery via WhatsApp is now genuinely working
+for Elgris, not just reporting success.
 
-**Action item**: get the correct Interakt template-message button-variable field name (docs or dashboard),
-fix `interakt.ts`, live-test against a real number with `NODE_ENV` not `development`, confirm an actual
-WhatsApp message arrives before considering OTP delivery done.
+MSG91 SMS fallback remains unconfigured (`MSG91_API_KEY` unset in `.env`) — fine as a fallback gap for now
+since the primary WhatsApp channel works, but worth configuring before relying on the fallback path for
+customers without WhatsApp.
