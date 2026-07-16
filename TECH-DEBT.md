@@ -142,3 +142,69 @@ our side, this is a CRM data-hygiene issue.
 16 Jul) — zoho contact ID, contact name (fetched live from Zoho since skipped contacts are never written
 locally), raw phone value, and reason, one row per contact-side phone issue. Re-run the export after Elgris
 fixes a batch to confirm the orphan count drops.
+
+## M7b npm audit: accepted with note, pending a deliberate Fastify v5 migration
+
+`npm audit` reports 10 advisories (1 critical, 6 high, 3 moderate) against the installed dependency tree.
+Assessed each against actual reachability (not just presence in `node_modules`) rather than upgrading blind:
+
+- **Dev-tooling only, zero production exposure**: the critical one (`vitest`) and 4 of the moderates/highs
+  (`@vitest/mocker`, `vite`, `vite-node`, `esbuild`) are all pulled in transitively by `vitest`, a
+  devDependency that never runs or ships in production. Accepted with note, no action needed now.
+- **Fastify chain, present in the runtime dependency tree** — assessed per-advisory against how this
+  codebase actually uses Fastify (no route ever registers a `schema:` option — all validation is Zod; no
+  route reads `request.protocol`/`request.host`; no route sends a stream response):
+  - `request.protocol`/`request.host` spoofing via `X-Forwarded-*` (moderate) — not reachable, unused.
+  - `sendWebStream` unbounded-memory DoS (low) — not reachable, unused.
+  - `@fastify/ajv-compiler` / `fast-json-stringify` / `fast-uri` URI-parsing bugs (high, path
+    traversal + host confusion) — not reachable; Fastify's native ajv/serializer path is never invoked
+    since every route validates via Zod instead of a route `schema`.
+  - **Content-Type header tab-character body-validation bypass (high, GHSA-jx2c-rxcm-jvmq)** — genuinely
+    reachable: every JSON POST route (`/auth/send-otp`, `/auth/verify-otp`, `/webhooks/zoho/*`) goes through
+    Fastify's built-in body parser, exactly where this bug lives.
+
+**Why not fixed now**: none of the Fastify-chain advisories have a minor/patch fix — the fix for the
+reachable one landed in Fastify 5.7.2, meaning the only path is a major-version bump (v4→v5) touching the
+core framework, every plugin (`@fastify/helmet`, `@fastify/cors`), and potentially route/plugin API surface.
+Explicitly out of scope for a hardening pass — no major upgrades without deliberate, separate approval.
+
+**Action item**: plan a dedicated Fastify v5 migration post-launch (own PR, full regression pass, plugin
+version bumps for `@fastify/helmet`/`@fastify/cors` in lockstep). Until then, the Content-Type bypass is the
+one concretely-open item — low urgency since exploiting it requires crafting a malformed Content-Type header
+specifically to smuggle a body past validation, on routes that are already OTP-rate-limited or
+secret-gated.
+
+## Interakt WhatsApp OTP delivery never actually worked — two real bugs found live
+
+M7b's fix to `interakt.ts`/`msg91.ts` (fail-closed OTP-stub logging outside `NODE_ENV=development`) had a
+side effect nobody intended: it made the app stop silently faking OTP-send success. That immediately surfaced
+that **WhatsApp OTP delivery via Interakt has never actually worked** for Elgris — masked until now because
+the old stub logging path faked `success:true` any time `NODE_ENV=development`, and the app has apparently
+only ever been exercised in that mode. Two distinct, real bugs found via a live test against
+`+919760341277` (`NODE_ENV=production` so nothing could stub-fake a result):
+
+1. **Template name typo** — `seed/elgris.tenant-config.json`'s `notifications.interakt_otp_template` was
+   `"Otp_varify"` (capital O); Interakt returned `400 {"result":false,"message":"No approved template found
+   with name 'Otp_varify' and language 'en'..."}`. Fixed: corrected to `"otp_varify"` (lowercase), matching
+   the value already present — unused — in `.env`'s `INTERAKT_OTP_TEMPLATE`.
+
+2. **Missing button variable value** — after the name fix, Interakt returned a *different* `400`:
+   `{"result":false,"message":"Missing variable values for template's button at index 0, expected number of
+   values are 1"}`. The `otp_varify` template has a button component (near-certainly a WhatsApp "Copy Code"
+   button, standard for authentication-category OTP templates) that requires its own variable value, sent
+   separately from the body placeholder. `InteraktProvider.send()` in `src/lib/otp-providers/interakt.ts`
+   only sends `template.bodyValues: [otp]` — no button-values field at all. **Not fixed** — needs Interakt's
+   template-message API docs to find the correct field name/shape for button variables (guessing the field
+   name risked another silent-wrong-payload bug of exactly this kind), then a live re-test to confirm real
+   WhatsApp delivery.
+
+MSG91 SMS fallback was separately confirmed to have no API key configured at all
+(`MSG91_API_KEY` unset in `.env`) — so today, in production conditions, `/auth/send-otp` would
+correctly return `502 SEND_FAILED` rather than a false-positive success (fail-closed working as designed),
+but **no OTP can currently be delivered to any customer by any channel**. This blocks the app's actual
+login flow and needs fixing before deploy — separate from and higher-priority than anything in M7b's
+security-hardening scope.
+
+**Action item**: get the correct Interakt template-message button-variable field name (docs or dashboard),
+fix `interakt.ts`, live-test against a real number with `NODE_ENV` not `development`, confirm an actual
+WhatsApp message arrives before considering OTP delivery done.

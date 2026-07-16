@@ -1,9 +1,8 @@
-import { Prisma } from '@prisma/client';
 import { prisma } from '../lib/prisma.js';
+import { isPrismaConnectionError } from '../lib/prisma-errors.js';
 
 const BATCH_TIMEOUT_MS = 90_000;
 const MAX_BATCH_RETRIES = 2;
-const CONNECTION_ERROR_CODES = new Set(['P1017', 'P1001', 'P1008', 'P1002']);
 
 class AttemptTimeoutError extends Error {
   constructor() {
@@ -28,13 +27,7 @@ function withTimeout<T>(fn: () => Promise<T>, timeoutMs: number): Promise<T> {
 }
 
 function isConnectionError(err: unknown): boolean {
-  if (err instanceof Prisma.PrismaClientKnownRequestError) {
-    return CONNECTION_ERROR_CODES.has(err.code);
-  }
-  if (err instanceof Prisma.PrismaClientInitializationError) {
-    return true;
-  }
-  return err instanceof AttemptTimeoutError;
+  return isPrismaConnectionError(err) || err instanceof AttemptTimeoutError;
 }
 
 /**

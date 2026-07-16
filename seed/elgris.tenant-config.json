@@ -131,7 +131,7 @@
   "reference_fields": [],
   "notifications": {
     "otp_channel": ["whatsapp", "sms_fallback"],
-    "interakt_otp_template": "Otp_varify",
+    "interakt_otp_template": "otp_varify",
     "stage_change_push": "Update on your {journey_label}: now at {stage}. Tap to see details.",
     "stage_change_whatsapp_template": null
   },

@@ -8,8 +8,12 @@ export class InteraktProvider implements OtpProvider {
   async send({ mobile, otp }: OtpSendParams): Promise<boolean> {
     const apiKey = process.env.INTERAKT_API_KEY;
     if (!apiKey) {
-      console.log(`[interakt-stub] would send WhatsApp OTP ${otp} to ${mobile} via template "${this.template}"`);
-      return true;
+      if (process.env.NODE_ENV === 'development') {
+        console.log(`[interakt-stub] would send WhatsApp OTP ${otp} to ${mobile} via template "${this.template}"`);
+        return true;
+      }
+      console.error('[interakt] INTERAKT_API_KEY not set — refusing to fake-succeed outside development');
+      return false;
     }
 
     try {
