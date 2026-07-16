@@ -87,12 +87,48 @@ await registerConfigRoutes(app);
 await registerMeRoutes(app);
 await registerWebhookRoutes(app);
 
-startSyncScheduler(app.tenantConfig);
+const stopScheduler = startSyncScheduler(app.tenantConfig);
 
 app.addHook('onClose', async () => {
   await prisma.$disconnect();
   redis.disconnect();
 });
+
+const SHUTDOWN_HARD_TIMEOUT_MS = 10_000;
+let shuttingDown = false;
+
+// Railway sends SIGTERM on every redeploy/restart. Stop cron first so no new
+// sync run starts mid-drain, then app.close() stops accepting new
+// connections while letting in-flight requests finish (Node's own
+// http.Server.close() semantics) and runs the onClose hook above. The hard
+// timeout exists so a hung connection can't turn every redeploy into a
+// SIGKILL from Railway — we'd rather exit clean on our own terms.
+async function handleShutdownSignal(signal: NodeJS.Signals): Promise<void> {
+  if (shuttingDown) {
+    return;
+  }
+  shuttingDown = true;
+  app.log.info(`${signal} received, shutting down gracefully (${SHUTDOWN_HARD_TIMEOUT_MS}ms hard cap)`);
+
+  const timer = setTimeout(() => {
+    app.log.error('graceful shutdown did not finish in time, forcing exit');
+    process.exit(1);
+  }, SHUTDOWN_HARD_TIMEOUT_MS);
+  timer.unref();
+
+  try {
+    await stopScheduler();
+    await app.close();
+    app.log.info('shutdown complete');
+    process.exit(0);
+  } catch (err) {
+    app.log.error({ err }, 'error during graceful shutdown');
+    process.exit(1);
+  }
+}
+
+process.on('SIGTERM', handleShutdownSignal);
+process.on('SIGINT', handleShutdownSignal);
 
 const port = Number(process.env.PORT ?? 3000);
 

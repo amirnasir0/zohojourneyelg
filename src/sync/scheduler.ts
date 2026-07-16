@@ -5,16 +5,22 @@ import { runIncrementalSync } from './incremental.js';
 import { runFullReconcile } from './reconcile.js';
 import { validateZohoFieldMapping } from './validate-fields.js';
 
+export type StopScheduler = () => Promise<void>;
+
 /**
  * Same-process scheduler for now (single always-on instance). Gated by
  * ENABLE_SYNC so the API can boot in tests/local dev without cron firing, and
  * so a future split into a dedicated worker process just means setting this
- * to false on the API side.
+ * to false on the API side. Returns a stop function so the server's graceful
+ * shutdown can stop cron from firing again before closing everything else —
+ * a no-op when the scheduler was never started.
  */
-export function startSyncScheduler(tenantConfig: TenantConfig): void {
+export function startSyncScheduler(tenantConfig: TenantConfig): StopScheduler {
+  const noop: StopScheduler = async () => {};
+
   if (process.env.ENABLE_SYNC === 'false') {
     console.log('[sync] sync scheduler disabled via ENABLE_SYNC');
-    return;
+    return noop;
   }
 
   let zohoClient;
@@ -22,14 +28,14 @@ export function startSyncScheduler(tenantConfig: TenantConfig): void {
     zohoClient = createZohoClient(tenantConfig.zoho.dc);
   } catch (err) {
     console.error('[sync] scheduler not started: Zoho client could not be configured', err);
-    return;
+    return noop;
   }
 
   validateZohoFieldMapping(zohoClient, tenantConfig).catch((err) => {
     console.error('[sync] field mapping validation failed to run', err);
   });
 
-  schedule(
+  const incrementalTask = schedule(
     '*/15 * * * *',
     async () => {
       try {
@@ -41,7 +47,7 @@ export function startSyncScheduler(tenantConfig: TenantConfig): void {
     { noOverlap: true, name: 'incremental-sync' },
   );
 
-  schedule(
+  const reconcileTask = schedule(
     '0 2 * * *',
     async () => {
       try {
@@ -54,4 +60,9 @@ export function startSyncScheduler(tenantConfig: TenantConfig): void {
   );
 
   console.log('[sync] scheduler started: incremental every 15min, full reconcile nightly at 02:00');
+
+  return async () => {
+    await Promise.all([incrementalTask.stop(), reconcileTask.stop()]);
+    console.log('[sync] scheduler stopped');
+  };
 }
