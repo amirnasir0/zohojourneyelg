@@ -40,6 +40,7 @@ const tenantConfig: TenantConfig = {
   webhooks: {
     journey_updated: { record_id_field: 'record_id', stage_field: 'stage', contact_id_field: 'contact_id', changed_at_field: 'changed_at' },
     contact_updated: { record_id_field: 'record_id' },
+    salesorder_updated: { record_id_field: 'record_id' },
   },
 };
 

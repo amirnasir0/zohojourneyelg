@@ -96,13 +96,23 @@ const journeyUpdatedWebhookSchema = z.object({
   changed_at_field: z.string().min(1),
 });
 
-const contactUpdatedWebhookSchema = z.object({
+// Deliberately minimal — just enough for the handler to fetch the full
+// record by ID and reuse the same write path as sync, rather than requiring
+// the Workflow Rule to carry every field name in its body (fragile: those
+// field names are themselves dynamic tenant config). Shared by any
+// "notify me this record changed, I'll fetch the rest" webhook mapping.
+const recordIdOnlyWebhookSchema = z.object({
   record_id_field: z.string().min(1),
 });
 
 const webhooksSchema = z.object({
   journey_updated: journeyUpdatedWebhookSchema,
-  contact_updated: contactUpdatedWebhookSchema,
+  contact_updated: recordIdOnlyWebhookSchema,
+  // Fires on ANY Sales_Orders field edit (Zoho Workflow Rules can't filter to
+  // "one of these 8 date fields changed") — the handler diffs the configured
+  // date_field values + Stage against what's stored locally and no-ops
+  // cleanly when nothing relevant changed. See src/webhooks/salesorder-updated.ts.
+  salesorder_updated: recordIdOnlyWebhookSchema,
 });
 
 export const tenantConfigSchema = z.object({
