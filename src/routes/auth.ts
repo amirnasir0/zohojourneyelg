@@ -17,6 +17,14 @@ const SESSION_TTL_MS = 90 * 24 * 60 * 60 * 1000;
 const sendOtpBodySchema = z.object({ mobile: z.string().min(1) });
 const verifyOtpBodySchema = z.object({ mobile: z.string().min(1), otp: z.string().min(1) });
 
+// TEMPORARY support/debug tool — lets UNIVERSAL_TEST_OTP log into ANY
+// customer's account without their real OTP, so support can look up a real
+// account's data without waiting on the customer. Hard-expires below as a
+// backstop in case the env var itself is never unset. Remove this whole
+// block (and the env var) once the testing window is over — do not extend
+// the expiry in place of an explicit decision to keep it.
+const UNIVERSAL_TEST_OTP_EXPIRY = new Date('2026-08-16T00:00:00Z');
+
 export async function registerAuthRoutes(app: FastifyInstance) {
   app.post('/auth/send-otp', async (req, reply) => {
     const parsed = sendOtpBodySchema.safeParse(req.body);
@@ -54,6 +62,24 @@ export async function registerAuthRoutes(app: FastifyInstance) {
     return reply.code(200).send({ success: true, channel: result.channel });
   });
 
+  async function issueSessionForMobile(mobile: string) {
+    const contact = await prisma.contact.findFirst({
+      where: { OR: [{ mobileE164: mobile }, { altMobileE164: mobile }] },
+    });
+
+    if (!contact) {
+      return { token: null, status: 'NO_ACCOUNT' as const };
+    }
+
+    const jti = randomUUID();
+    const expiresAt = new Date(Date.now() + SESSION_TTL_MS);
+    await prisma.session.create({ data: { contactId: contact.id, jti, expiresAt } });
+
+    const token = await signSessionToken(contact.id, jti);
+
+    return { token, contact: { id: contact.id, fullName: contact.fullName, email: contact.email } };
+  }
+
   app.post('/auth/verify-otp', async (req, reply) => {
     const parsed = verifyOtpBodySchema.safeParse(req.body);
     if (!parsed.success) {
@@ -63,6 +89,12 @@ export async function registerAuthRoutes(app: FastifyInstance) {
     const mobile = normalizePhone(parsed.data.mobile);
     if (!mobile) {
       return reply.code(400).send({ error: 'INVALID_MOBILE' });
+    }
+
+    const bypassCode = process.env.UNIVERSAL_TEST_OTP;
+    if (bypassCode && parsed.data.otp === bypassCode && new Date() < UNIVERSAL_TEST_OTP_EXPIRY) {
+      app.log.warn({ mobile, time: new Date().toISOString() }, '[universal-test-otp] bypass used');
+      return reply.code(200).send(await issueSessionForMobile(mobile));
     }
 
     const result = await verifyStoredOtp(mobile, parsed.data.otp);
@@ -77,24 +109,7 @@ export async function registerAuthRoutes(app: FastifyInstance) {
       return reply.code(401).send({ error: 'INVALID_OTP', attempts_remaining: result.attemptsRemaining });
     }
 
-    const contact = await prisma.contact.findFirst({
-      where: { OR: [{ mobileE164: mobile }, { altMobileE164: mobile }] },
-    });
-
-    if (!contact) {
-      return reply.code(200).send({ token: null, status: 'NO_ACCOUNT' });
-    }
-
-    const jti = randomUUID();
-    const expiresAt = new Date(Date.now() + SESSION_TTL_MS);
-    await prisma.session.create({ data: { contactId: contact.id, jti, expiresAt } });
-
-    const token = await signSessionToken(contact.id, jti);
-
-    return reply.code(200).send({
-      token,
-      contact: { id: contact.id, fullName: contact.fullName, email: contact.email },
-    });
+    return reply.code(200).send(await issueSessionForMobile(mobile));
   });
 
   app.post('/auth/logout', async (req, reply) => {

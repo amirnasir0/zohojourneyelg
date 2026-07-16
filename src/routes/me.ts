@@ -18,6 +18,7 @@ export async function registerMeRoutes(app: FastifyInstance) {
       full_name: contact.fullName,
       mobile: contact.mobileE164,
       email: contact.email,
+      zoho_contact_id: contact.zohoContactId,
     };
 
     return sendWithEtag(req, reply, payload, 'private, no-cache');
