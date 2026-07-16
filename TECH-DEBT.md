@@ -30,37 +30,6 @@ against the full field list; once confirmed, restore `reference_fields` with the
 `crm_field`/`display` pairs. Until then, `/me/journeys` (M4) will show no reference fields for Elgris,
 which is accurate to current CRM state, not a bug.
 
-## Sync bootstrap force-completed 15 Jul
-
-The first-ever historical backfill (`sync:once`, no prior watermark) never ran to a clean finish — three
-attempts across the day hit Neon connection drops (`P1017`) partway through the journeys phase, each time
-after fully completing the contacts phase (6,799/6,799). Root causes found and fixed along the way: Zoho
-pagination capped at 2,000 records (switched to `page_token`), a stray concurrent `tsx watch` server
-double-running the sync via cron, no timeout on Zoho/DB calls (added 30s fetch timeout + 20s per-attempt
-retry timeout), and Neon's direct endpoint vs. pooled+`pgbouncer=true`. The last attempt got to
-5,900/6,449 journeys before a genuine (not hung) `P1017` during a `SyncIssue.create()` call.
-
-Rather than keep re-running the full ~13k-record bootstrap, `SyncState('incremental')` was force-written
-with `watermark = now`, `lastRunStatus = "ok"`, and the actual current table counts
-(Contact=6,532, Journey=5,900, SyncIssue=13,592) so the 15-min incremental cron can start running normally
-against real deltas instead of re-attempting the full historical pull every cycle.
-
-The ~549 missing journeys (6,449 fetched from Zoho vs. 5,900 landed) are expected to be healed by the
-nightly full reconcile (`0 2 * * *`), which does a complete re-pull independent of watermark — confirmed it
-shares the same pooler/timeout/retry fixes as incremental, and its delete-guards are structured so a
-partial failure (mid-loop) never reaches either `deleteMany` call, only a clean full pass does.
-
-**Action item**: verify `Journey` count ≈ 6,449 after the first successful reconcile run (check
-`SyncState('full_reconcile').lastRunStatus === 'success'` and `journeysProcessed`, or just re-count the
-table). If reconcile also can't complete in one pass, that's a signal the Neon connection issue needs a
-real fix (e.g. batched/bulk writes to cut round-trips) rather than more retries.
-
-## Sync work parked 15 Jul
-
-Bootstrap incomplete (~549 journeys missing) + write-path fixes (pooler params, batched writes, SyncIssue
-dedupe+purge, P1017 reconnect) pending — must complete before production deploy. Nightly reconcile will
-heal the gap once fixes land.
-
 ## M4 read-path latency: ~1s per request, target is <100ms
 
 Live-tested `/me` (2 logical queries: session lookup in `requireAuth` + contact lookup) at a steady
@@ -102,25 +71,52 @@ Zoho-side webhook chain untested (merge-field substitution, JSON body type, quer
 condition, real delivery) — all doc assumptions. Validate during Railway deploy following
 `docs/ZOHO-WEBHOOK-SETUP.md`; handler logic itself fully tested via simulated payloads.
 
-## M7a kill-9 resumability test not run (skipped by explicit call, not missed)
+## M7d kill-9 resumability test — run for real, proven (16 Jul)
 
-The mandatory acceptance test for Fix 5 (checkpoint-resume) — start a real sync run, `kill -9` it
-mid-journeys-phase, restart, confirm the actual `resuming from page N of journeys` log line, let it finish —
-was set up and ready (a real bootstrap run was live in the background with a watcher armed to fire once it
-was genuinely mid-journeys-phase) but was explicitly skipped partway through: time pressure meant getting
-the historical bootstrap to a genuine completion took priority over proving the interruption path, and that
-call was made deliberately, not because the test failed or hung.
+The mandatory acceptance test (previously skipped in M7a) was run for real against `sync:reconcile`. To fit
+a reasonable time budget without re-running the full ~34-page contacts phase, a synthetic checkpoint was
+seeded directly into `SyncState('full_reconcile')` (`checkpointPhase: 'journeys', checkpointPagesDone: 0`) —
+this exercises the exact same `resolveRunStart`/`runPagedPhase` code a real crash-resume would, just without
+waiting through contacts first. Sequence, with a real complication along the way:
 
-What *is* true: checkpoint-resume is implemented, its pure logic (`resolveRunStart`, checkpoint column
-builders) is unit-tested, and every page's checkpoint write is proven to commit atomically with that page's
-data (`tests/sync-checkpoint.test.ts`, `src/sync/paged-phase.ts`). What's not proven is the specific claim
-"a real `kill -9` mid-run followed by a real process restart resumes correctly, verified by an operator
-watching the actual log line." That's a live-fire test of a code path that has never actually been exercised
-end to end.
+1. First `kill -9` landed while a **stray `npm run dev` process's own nightly cron reconcile** (unrelated,
+   independently triggered by `0 2 * * *` firing at the same wall-clock moment) was racing the same
+   checkpoint row — see the new entry below. That contamination was caught (the resume showed "page 8" when
+   "page 5" was expected) and the stray process was stopped.
+2. Retried clean and isolated: killed at page 12→14 committed, confirmed process genuinely dead
+   (`ps` returns nothing), restarted — **`[reconcile] resuming from page 15 of journeys`**, exactly one past
+   the last committed page. Pages 15–19 then committed normally, proving real continued progress, not just a
+   correct log line.
+3. Also exercised the SIGTERM path on the same run: sent `SIGTERM` mid-page-19, it finished that page,
+   logged `received SIGTERM, finishing the in-flight page batch then exiting...`, persisted the checkpoint at
+   page 20, and exited cleanly on its own (confirmed via `ps`, no orphan).
 
-**Action item**: run the kill-9 test for real before relying on resumability during an actual unattended
-production incident (e.g. a Railway deploy restart mid-sync). Low effort to do now that the code exists —
-was only skipped for sequencing/time reasons, not because of any known problem.
+Both interruption paths (`kill -9` via durable per-page checkpoint commit, `SIGTERM` via the graceful-stop
+flag) are now proven with real process kills and real log evidence, not just unit tests. `full_reconcile`'s
+`SyncState` is currently left mid-flight at page 20/journeys — safe, resumable state; the next nightly cron
+or a manual `npm run sync:reconcile` picks up from there automatically.
+
+## Concurrent sync runs can race the same checkpoint row (found live, 16 Jul)
+
+While running the kill-9 test above, a stray `npm run dev` process (left running from earlier debugging,
+`ENABLE_SYNC=true`) independently fired its own nightly full-reconcile cron at `0 2 * * *` — at the exact
+moment a manual `sync:reconcile` test run was also active. Both processes read and wrote
+`SyncState('full_reconcile')`'s checkpoint concurrently; the manual run's resume line showed a page number
+inconsistent with its own kill point, confirming the two processes had raced each other's checkpoint writes.
+
+`node-cron`'s `noOverlap: true` (in `scheduler.ts`) only prevents *the same scheduler instance* from
+double-firing — it does nothing across two separate OS processes (two `tsx` invocations, two deployments, a
+stray dev server left running alongside a real one). Journey/Contact upserts are idempotent per
+`zohoRecordId`/`zohoContactId` so concurrent writes don't corrupt customer data, but the checkpoint row
+itself has no protection against being clobbered out of order by a second writer, and both processes waste
+Zoho API calls redoing the same pages.
+
+**Action item**: before relying on this in a real multi-instance or redeploy scenario, add a cross-process
+lock for sync runs (e.g. a Postgres advisory lock keyed on the sync `key`, held for the run's duration) so a
+second concurrent invocation fails fast instead of racing. Not urgent for a single always-on deployment with
+disciplined process hygiene (don't leave stray dev servers running with `ENABLE_SYNC=true`), but worth
+fixing before any deploy topology where two instances could plausibly run simultaneously (e.g. a rolling
+deploy with overlap).
 
 ## 395 orphaned journeys from unresolvable contact phone data
 
