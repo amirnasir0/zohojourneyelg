@@ -16,7 +16,8 @@
     "generate:jwt-keys": "tsx src/scripts/generate-jwt-keys.ts",
     "zoho:authorize": "tsx src/scripts/zoho-authorize.ts",
     "sync:once": "tsx src/scripts/sync-once.ts",
-    "sync:reconcile": "tsx src/scripts/reconcile-once.ts"
+    "sync:reconcile": "tsx src/scripts/reconcile-once.ts",
+    "report:orphan-contacts": "tsx src/scripts/export-orphan-contact-report.ts"
   },
   "dependencies": {
     "@prisma/client": "^5.20.0",

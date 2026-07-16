@@ -101,3 +101,44 @@ concurrently against the same database — no migration, just a second env var a
 Zoho-side webhook chain untested (merge-field substitution, JSON body type, query-param secret, trigger
 condition, real delivery) — all doc assumptions. Validate during Railway deploy following
 `docs/ZOHO-WEBHOOK-SETUP.md`; handler logic itself fully tested via simulated payloads.
+
+## M7a kill-9 resumability test not run (skipped by explicit call, not missed)
+
+The mandatory acceptance test for Fix 5 (checkpoint-resume) — start a real sync run, `kill -9` it
+mid-journeys-phase, restart, confirm the actual `resuming from page N of journeys` log line, let it finish —
+was set up and ready (a real bootstrap run was live in the background with a watcher armed to fire once it
+was genuinely mid-journeys-phase) but was explicitly skipped partway through: time pressure meant getting
+the historical bootstrap to a genuine completion took priority over proving the interruption path, and that
+call was made deliberately, not because the test failed or hung.
+
+What *is* true: checkpoint-resume is implemented, its pure logic (`resolveRunStart`, checkpoint column
+builders) is unit-tested, and every page's checkpoint write is proven to commit atomically with that page's
+data (`tests/sync-checkpoint.test.ts`, `src/sync/paged-phase.ts`). What's not proven is the specific claim
+"a real `kill -9` mid-run followed by a real process restart resumes correctly, verified by an operator
+watching the actual log line." That's a live-fire test of a code path that has never actually been exercised
+end to end.
+
+**Action item**: run the kill-9 test for real before relying on resumability during an actual unattended
+production incident (e.g. a Railway deploy restart mid-sync). Low effort to do now that the code exists —
+was only skipped for sequencing/time reasons, not because of any known problem.
+
+## 395 orphaned journeys from unresolvable contact phone data
+
+The M7a full bootstrap run (16 Jul) is the first sync pass ever to complete cleanly end to end, and it
+surfaced real Zoho-side data-quality debt that earlier partial/crashed runs never got far enough to see:
+395 journey (Deals) records reference a contact whose phone data couldn't be resolved into a valid
+`mobile_e164`, so the contact itself was never synced locally (per the existing DUPLICATE_MOBILE/
+UNPARSEABLE_PHONE/NO_VALID_MOBILE skip pattern from M3) — and because a journey requires its contact to
+exist locally first, every journey pointing at one of those ~258 skipped contacts gets logged as
+`SyncIssue(reason: "ORPHAN_JOURNEY")` and dropped for the run instead of crashing.
+
+This is the sync worker behaving correctly (skip-and-log, not crash-and-lose-everything-else), but it's a
+real product problem: those Elgris customers currently have no visible journey in the app because their CRM
+contact record has an unparseable or missing phone number. Self-heals automatically once the underlying
+Zoho contact record is fixed (next incremental/reconcile pass will pick it up) — no code changes needed on
+our side, this is a CRM data-hygiene issue.
+
+**Action item**: sent to Elgris as a CSV action list (`outputs/orphan-contact-phone-report.csv`, generated
+16 Jul) — zoho contact ID, contact name (fetched live from Zoho since skipped contacts are never written
+locally), raw phone value, and reason, one row per contact-side phone issue. Re-run the export after Elgris
+fixes a batch to confirm the orphan count drops.

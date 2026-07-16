@@ -2,7 +2,28 @@ import { loadTenantConfig } from '../config/loader.js';
 import { createZohoClient } from '../lib/zoho-client.js';
 import { prisma } from '../lib/prisma.js';
 import { runIncrementalSync } from '../sync/incremental.js';
+import { requestShutdown } from '../sync/paged-phase.js';
 import { validateZohoFieldMapping } from '../sync/validate-fields.js';
+
+let shuttingDown = false;
+
+// SIGKILL (kill -9) can't be caught by any process — this handler exists for
+// an orderly Ctrl-C or a deploy-triggered SIGTERM, not for the mandatory
+// kill-9 resumability test. That test is proven by the per-page checkpoint
+// being committed atomically with its data, not by signal handling: even
+// with zero chance to clean up, the last committed page's checkpoint is
+// already durable in Postgres.
+function handleShutdownSignal(signal: NodeJS.Signals): void {
+  if (shuttingDown) {
+    return;
+  }
+  shuttingDown = true;
+  console.log(`[sync:once] received ${signal}, finishing the in-flight page batch then exiting...`);
+  requestShutdown();
+}
+
+process.on('SIGINT', handleShutdownSignal);
+process.on('SIGTERM', handleShutdownSignal);
 
 async function main(): Promise<void> {
   console.log('[sync:once] starting');
@@ -38,7 +59,7 @@ async function main(): Promise<void> {
   console.log(`  Journey:    ${journeys}`);
   console.log(`  SyncIssue:  ${issues}`);
   console.log('[sync:once] SyncState(incremental):', JSON.stringify(state, null, 2));
-  console.log('[sync:once] incremental sync complete');
+  console.log(shuttingDown ? '[sync:once] stopped early for graceful shutdown (checkpoint persisted, rerun to continue)' : '[sync:once] incremental sync complete');
 }
 
 main()

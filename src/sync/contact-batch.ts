@@ -89,11 +89,17 @@ export interface ContactBatchResult {
 
 /**
  * Writes one batch (~200 records): one bulk read to find existing owners of
- * any candidate mobile number in this batch, then at most one $transaction
- * for the upserts and one createMany for the issues — a handful of round
- * trips per batch instead of one per record.
+ * any candidate mobile number in this batch, then a single $transaction
+ * covering the upserts, the issue createMany, AND any extraOps the caller
+ * supplies (e.g. a SyncState checkpoint update) — a handful of round trips
+ * per batch instead of one per record, and the checkpoint commits atomically
+ * with the data so it can never drift from what's actually in the DB.
  */
-export async function writeContactBatch(rawRecords: ZohoRecord[], phoneFields: string[]): Promise<ContactBatchResult> {
+export async function writeContactBatch(
+  rawRecords: ZohoRecord[],
+  phoneFields: string[],
+  extraOps: Prisma.PrismaPromise<unknown>[] = [],
+): Promise<ContactBatchResult> {
   const candidates = new Set<string>();
   for (const raw of rawRecords) {
     const { mobileE164, altMobileE164 } = ingestContactPhones(raw, phoneFields);
@@ -114,44 +120,43 @@ export async function writeContactBatch(rawRecords: ZohoRecord[], phoneFields: s
 
   const { upserts, issues } = planContactBatch(rawRecords, phoneFields, existingMobileOwners);
 
-  if (upserts.length > 0) {
-    const results = await withBatchRetry(() =>
-      prisma.$transaction(
-        upserts.map((item) =>
-          prisma.contact.upsert({
-            where: { zohoContactId: item.zohoContactId },
-            create: {
-              zohoContactId: item.zohoContactId,
-              mobileE164: item.mobileE164,
-              altMobileE164: item.altMobileE164,
-              fullName: item.fullName,
-              email: item.email,
-              raw: item.raw as Prisma.InputJsonValue,
-              syncedAt: new Date(),
-            },
-            update: {
-              mobileE164: item.mobileE164,
-              altMobileE164: item.altMobileE164,
-              fullName: item.fullName,
-              email: item.email,
-              raw: item.raw as Prisma.InputJsonValue,
-              syncedAt: new Date(),
-            },
-          }),
-        ),
-      ),
-    );
-
-    await Promise.all(results.map((c) => invalidateJourneysCache(c.id)));
-  }
-
-  if (issues.length > 0) {
-    await withBatchRetry(() =>
-      prisma.syncIssue.createMany({
-        data: issues.map((i) => ({ zohoRecordId: i.zohoRecordId, recordType: 'contact', field: i.field, rawValue: i.rawValue, reason: i.reason })),
-        skipDuplicates: true,
+  if (upserts.length > 0 || issues.length > 0 || extraOps.length > 0) {
+    const upsertOps = upserts.map((item) =>
+      prisma.contact.upsert({
+        where: { zohoContactId: item.zohoContactId },
+        create: {
+          zohoContactId: item.zohoContactId,
+          mobileE164: item.mobileE164,
+          altMobileE164: item.altMobileE164,
+          fullName: item.fullName,
+          email: item.email,
+          raw: item.raw as Prisma.InputJsonValue,
+          syncedAt: new Date(),
+        },
+        update: {
+          mobileE164: item.mobileE164,
+          altMobileE164: item.altMobileE164,
+          fullName: item.fullName,
+          email: item.email,
+          raw: item.raw as Prisma.InputJsonValue,
+          syncedAt: new Date(),
+        },
       }),
     );
+    const issueOps: Prisma.PrismaPromise<unknown>[] =
+      issues.length > 0
+        ? [
+            prisma.syncIssue.createMany({
+              data: issues.map((i) => ({ zohoRecordId: i.zohoRecordId, recordType: 'contact', field: i.field, rawValue: i.rawValue, reason: i.reason })),
+              skipDuplicates: true,
+            }),
+          ]
+        : [];
+
+    const results = await withBatchRetry(() => prisma.$transaction([...upsertOps, ...issueOps, ...extraOps]));
+    const contactResults = results.slice(0, upsertOps.length) as Array<{ id: string }>;
+
+    await Promise.all(contactResults.map((c) => invalidateJourneysCache(c.id)));
   }
 
   return { written: upserts.length, issues: issues.length };

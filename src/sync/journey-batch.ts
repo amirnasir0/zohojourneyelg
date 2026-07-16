@@ -97,10 +97,15 @@ interface ZohoLookupField {
 /**
  * Writes one batch (~200 records): one bulk read to resolve
  * zohoContactId -> local contact.id for every contact referenced in this
- * batch, then at most one $transaction for the upserts and one createMany
- * for the issues.
+ * batch, then a single $transaction covering the upserts, the issue
+ * createMany, AND any extraOps the caller supplies (e.g. a SyncState
+ * checkpoint update) so the checkpoint commits atomically with the data.
  */
-export async function writeJourneyBatch(rawRecords: ZohoRecord[], tenantConfig: TenantConfig): Promise<JourneyBatchResult> {
+export async function writeJourneyBatch(
+  rawRecords: ZohoRecord[],
+  tenantConfig: TenantConfig,
+  extraOps: Prisma.PrismaPromise<unknown>[] = [],
+): Promise<JourneyBatchResult> {
   const lookupField = tenantConfig.zoho.journey_contact_lookup_field;
   const candidateContactIds = new Set<string>();
   for (const raw of rawRecords) {
@@ -121,47 +126,45 @@ export async function writeJourneyBatch(rawRecords: ZohoRecord[], tenantConfig: 
 
   const { upserts, issues } = planJourneyBatch(rawRecords, tenantConfig, contactIdByZohoId);
 
-  if (upserts.length > 0) {
-    await withBatchRetry(() =>
-      prisma.$transaction(
-        upserts.map((item) =>
-          prisma.journey.upsert({
-            where: { zohoRecordId: item.zohoRecordId },
-            create: {
-              zohoRecordId: item.zohoRecordId,
-              contactId: item.contactId,
-              name: item.name,
-              stage: item.stage,
-              stageIndex: item.stageIndex,
-              refValues: item.refValues as Prisma.InputJsonValue,
-              raw: item.raw as Prisma.InputJsonValue,
-              syncedAt: new Date(),
-            },
-            update: {
-              contactId: item.contactId,
-              name: item.name,
-              stage: item.stage,
-              stageIndex: item.stageIndex,
-              refValues: item.refValues as Prisma.InputJsonValue,
-              raw: item.raw as Prisma.InputJsonValue,
-              syncedAt: new Date(),
-            },
-          }),
-        ),
-      ),
+  if (upserts.length > 0 || issues.length > 0 || extraOps.length > 0) {
+    const upsertOps = upserts.map((item) =>
+      prisma.journey.upsert({
+        where: { zohoRecordId: item.zohoRecordId },
+        create: {
+          zohoRecordId: item.zohoRecordId,
+          contactId: item.contactId,
+          name: item.name,
+          stage: item.stage,
+          stageIndex: item.stageIndex,
+          refValues: item.refValues as Prisma.InputJsonValue,
+          raw: item.raw as Prisma.InputJsonValue,
+          syncedAt: new Date(),
+        },
+        update: {
+          contactId: item.contactId,
+          name: item.name,
+          stage: item.stage,
+          stageIndex: item.stageIndex,
+          refValues: item.refValues as Prisma.InputJsonValue,
+          raw: item.raw as Prisma.InputJsonValue,
+          syncedAt: new Date(),
+        },
+      }),
     );
+    const issueOps: Prisma.PrismaPromise<unknown>[] =
+      issues.length > 0
+        ? [
+            prisma.syncIssue.createMany({
+              data: issues.map((i) => ({ zohoRecordId: i.zohoRecordId, recordType: 'journey', field: i.field, rawValue: i.rawValue, reason: i.reason })),
+              skipDuplicates: true,
+            }),
+          ]
+        : [];
+
+    await withBatchRetry(() => prisma.$transaction([...upsertOps, ...issueOps, ...extraOps]));
 
     const affectedContactIds = new Set(upserts.map((item) => item.contactId));
     await Promise.all([...affectedContactIds].map((id) => invalidateJourneysCache(id)));
-  }
-
-  if (issues.length > 0) {
-    await withBatchRetry(() =>
-      prisma.syncIssue.createMany({
-        data: issues.map((i) => ({ zohoRecordId: i.zohoRecordId, recordType: 'journey', field: i.field, rawValue: i.rawValue, reason: i.reason })),
-        skipDuplicates: true,
-      }),
-    );
   }
 
   return { written: upserts.length, issues: issues.length };

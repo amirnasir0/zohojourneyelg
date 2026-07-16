@@ -121,6 +121,20 @@ model SyncState {
   issuesCount       Int       @default(0) @map("issues_count")
   updatedAt         DateTime  @updatedAt @map("updated_at")
 
+  // Checkpoint for interruption-resilient runs (Fix 5). Written in the same
+  // transaction as each page's batch commit, so it can never drift from
+  // actual data. Non-null checkpointPhase means a run is (or was) mid-flight;
+  // on startup this is what "resume from page N" reads from instead of
+  // restarting at page 1. checkpointSinceIso/checkpointRunStartedAt are the
+  // *original* run's values, reused verbatim on resume rather than
+  // recomputed, so the eventual watermark reflects when the run actually
+  // started, not when it happened to finish.
+  checkpointPhase        String?   @map("checkpoint_phase")
+  checkpointPageToken    String?   @map("checkpoint_page_token")
+  checkpointPagesDone    Int       @default(0) @map("checkpoint_pages_done")
+  checkpointSinceIso     String?   @map("checkpoint_since_iso")
+  checkpointRunStartedAt DateTime? @map("checkpoint_run_started_at")
+
   @@map("sync_state")
 }
 

@@ -4,3 +4,5 @@ dist/
 *.log
 .DS_Store
 keys/
+# Contains real customer PII (names, phone numbers) pulled from Zoho for data-hygiene reports.
+outputs/
