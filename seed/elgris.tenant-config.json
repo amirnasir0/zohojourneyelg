@@ -9,126 +9,104 @@
   },
   "zoho": {
     "dc": "in",
-    "org_id": "60000000001",
-    "journey_module": "Deals",
+    "org_id": "60022843030",
+    "journey_module": "Sales_Orders",
     "contact_phone_fields": ["Phone", "Mobile"],
     "journey_stage_field": "Stage",
-    "journey_name_field": "Deal_Name",
+    "journey_name_field": "Subject",
     "journey_contact_lookup_field": "Contact_Name"
   },
   "journey": {
     "label_singular": "Project",
     "label_plural": "Projects",
+    "empty_state_copy": "Your project is being set up — you'll see your installation journey here once work begins.",
     "stages": [
       {
         "type": "journey",
         "index": 1,
-        "crm_value": "Site Survey",
-        "display": "Site Survey",
+        "crm_value": "Sales Order",
+        "date_field": "Sales_Order",
+        "display": "Sales Order Placed",
         "owner": "elgris",
-        "next_copy": "Our engineer will visit your site within 3 working days. Please keep your latest electricity bill ready."
+        "next_copy": "Your sales order has been created. Our team will begin processing your installation shortly."
       },
       {
         "type": "journey",
         "index": 2,
-        "crm_value": "Design & Quotation",
-        "display": "Design & Quotation",
+        "crm_value": "Material Dispatch",
+        "date_field": "Material_Dispatch_Date",
+        "display": "Material Dispatch",
         "owner": "elgris",
-        "next_copy": "We are preparing your system design and quotation based on the site survey."
+        "next_copy": "Your solar panels and equipment are being dispatched to your site."
       },
       {
         "type": "journey",
-        "index": 13,
-        "crm_value": "Installation In Progress",
-        "display": "Installation In Progress",
+        "index": 3,
+        "crm_value": "Construction",
+        "date_field": "Construction_Date",
+        "display": "Construction",
         "owner": "elgris",
         "next_copy": "Our installation team is on site fitting your solar panels and inverter."
       },
       {
         "type": "journey",
-        "index": 14,
-        "crm_value": "Net Meter Installation",
-        "display": "Net Meter Installation",
+        "index": 4,
+        "crm_value": "Net Metering",
+        "date_field": "Net_Metering_Date",
+        "display": "Net Metering",
         "owner": "discom",
         "next_copy": "DISCOM will install your net meter. This typically takes 10-15 days and is handled by the electricity board."
       },
       {
         "type": "journey",
-        "index": 24,
-        "crm_value": "Subsidy Disbursed",
-        "display": "Subsidy Disbursed",
+        "index": 5,
+        "crm_value": "Bond Completion",
+        "date_field": "Bond_Completion",
+        "display": "Bond Completion",
         "owner": "elgris",
-        "next_copy": "Your subsidy has been disbursed. Your solar journey is now complete."
-      },
-      {
-        "type": "pre_journey",
-        "crm_value": "Identify Decision Makers",
-        "display": "Identify Decision Makers"
-      },
-      {
-        "type": "pre_journey",
-        "crm_value": "Need Proposal",
-        "display": "Need Proposal"
-      },
-      {
-        "type": "pre_journey",
-        "crm_value": "Visit Required Immediate",
-        "display": "Visit Required Immediate"
-      },
-      {
-        "type": "pre_journey",
-        "crm_value": "Visit Required After sometime",
-        "display": "Visit Required After Sometime"
-      },
-      {
-        "type": "pre_journey",
-        "crm_value": "Visit Done",
-        "display": "Visit Done"
-      },
-      {
-        "type": "pre_journey",
-        "crm_value": "Proposal Given",
-        "display": "Proposal Given"
-      },
-      {
-        "type": "pre_journey",
-        "crm_value": "Follow Up/ Negotiation",
-        "display": "Follow Up / Negotiation"
-      },
-      {
-        "type": "pre_journey",
-        "crm_value": "Closed Won",
-        "display": "Closed Won",
+        "next_copy": "Your subsidy bond documentation is being completed.",
         "_review": true
       },
       {
-        "type": "on_hold",
-        "crm_value": "Hold",
-        "display": "On Hold"
+        "type": "journey",
+        "index": 6,
+        "crm_value": "Disbursement",
+        "date_field": "Disbursement_Date",
+        "display": "Disbursement",
+        "owner": "elgris",
+        "next_copy": "Your loan/subsidy amount is being disbursed.",
+        "_review": true
       },
       {
-        "type": "hidden",
-        "crm_value": "Closed Lost",
-        "display": "Closed Lost"
+        "type": "journey",
+        "index": 7,
+        "crm_value": "Subsidy Redeem",
+        "date_field": "Subsidy_Redeem_Date",
+        "display": "Subsidy Redeem",
+        "owner": "elgris",
+        "next_copy": "Your subsidy claim has been submitted for redemption."
       },
       {
-        "type": "hidden",
-        "crm_value": "Closed lost to Competitors",
-        "display": "Closed Lost to Competitors"
-      },
-      {
-        "type": "hidden",
-        "crm_value": "Low Bill/Not Qualified",
-        "display": "Low Bill / Not Qualified"
-      },
-      {
-        "type": "hidden",
-        "crm_value": "Out of Solapur District",
-        "display": "Out of Solapur District"
+        "type": "journey",
+        "index": 8,
+        "crm_value": "Subsidy Received",
+        "date_field": "Subsidy_Received_Date",
+        "display": "Subsidy Received",
+        "owner": "elgris",
+        "next_copy": "Your subsidy has been received. Your solar journey is now complete."
       }
     ]
   },
-  "reference_fields": [],
+  "reference_fields": [
+    { "crm_field": "Sales_Order", "display": "Sales Order Date" },
+    { "crm_field": "Material_Dispatch_Date", "display": "Material Dispatch Date" },
+    { "crm_field": "Construction_Date", "display": "Construction Date" },
+    { "crm_field": "Net_Metering_Date", "display": "Net Metering Date" },
+    { "crm_field": "Bond_Completion", "display": "Bond Completion Date" },
+    { "crm_field": "Disbursement_Date", "display": "Disbursement Date" },
+    { "crm_field": "Subsidy_Redeem_Date", "display": "Subsidy Redeem Date" },
+    { "crm_field": "Subsidy_Received_Date", "display": "Subsidy Received Date" }
+  ],
   "notifications": {
     "otp_channel": ["whatsapp", "sms_fallback"],
     "interakt_otp_template": "otp_varify",

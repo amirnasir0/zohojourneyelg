@@ -4,6 +4,7 @@ import { resolveStageIndex } from '../src/sync/stage-resolve.js';
 const journeyConfig = {
   label_singular: 'Project',
   label_plural: 'Projects',
+  empty_state_copy: 'Your project is being set up.',
   stages: [
     { type: 'journey' as const, index: 1, crm_value: 'Site Survey', display: 'Site Survey', owner: 'elgris', next_copy: 'x' },
     { type: 'journey' as const, index: 14, crm_value: 'Net Meter Installation', display: 'Net Meter Installation', owner: 'discom', next_copy: 'x' },

@@ -37,6 +37,7 @@ const baseTenantConfig: TenantConfig = {
   journey: {
     label_singular: 'Project',
     label_plural: 'Projects',
+    empty_state_copy: 'Your project is being set up.',
     stages: [
       ...fullJourneyStages,
       { type: 'pre_journey', crm_value: 'Need Proposal', display: 'Need Proposal' },
@@ -58,7 +59,7 @@ const baseTenantConfig: TenantConfig = {
 };
 
 function journeyRow(stage: string) {
-  return { id: 'j1', name: 'Deal 1', stage, refValues: {}, syncedAt: new Date('2026-01-01T00:00:00Z') };
+  return { id: 'j1', name: 'Deal 1', stage, refValues: {}, raw: {}, syncedAt: new Date('2026-01-01T00:00:00Z') };
 }
 
 describe('buildStageTimeline', () => {
@@ -137,5 +138,41 @@ describe('buildJourneySummary', () => {
   it('returns null for a hidden-type stage (caller treats this as not-found)', () => {
     const summary = buildJourneySummary(journeyRow('Closed Lost'), baseTenantConfig);
     expect(summary).toBeNull();
+  });
+});
+
+describe('buildJourneySummary — date-driven mode', () => {
+  const dateDrivenConfig: TenantConfig = {
+    ...baseTenantConfig,
+    journey: {
+      ...baseTenantConfig.journey,
+      stages: [
+        { type: 'journey', index: 1, crm_value: 'Sales Order', date_field: 'Sales_Order', display: 'Sales Order Placed', owner: 'elgris', next_copy: 'x' },
+        { type: 'journey', index: 2, crm_value: 'Construction', date_field: 'Construction_Date', display: 'Construction', owner: 'elgris', next_copy: 'y' },
+        { type: 'journey', index: 3, crm_value: 'Subsidy Received', date_field: 'Subsidy_Received_Date', display: 'Subsidy Received', owner: 'elgris', next_copy: 'z' },
+      ],
+    },
+  };
+
+  it('derives stage_index and progress_pct from filled date fields, ignoring the raw Stage value entirely', () => {
+    // Stage is blank (the real-world common case for Elgris Sales_Orders) —
+    // date-driven mode never even looks at it for progress purposes.
+    const journey = { id: 'j1', name: 'SO 1', stage: '', refValues: { Construction_Date: '2026-03-01' }, raw: {}, syncedAt: new Date() };
+    const summary = buildJourneySummary(journey, dateDrivenConfig);
+    expect(summary).toMatchObject({ stage_index: 2, total_stages: 3, progress_pct: 67, status: 'in_progress' });
+    expect(summary?.stage_unrecognized).toBeUndefined();
+  });
+
+  it('never returns null/pre_journey/on_hold in date-driven mode — every record is in_progress', () => {
+    const journey = { id: 'j1', name: 'SO 1', stage: 'Some Junk Stage Value', refValues: {}, raw: {}, syncedAt: new Date() };
+    const summary = buildJourneySummary(journey, dateDrivenConfig);
+    expect(summary?.status).toBe('in_progress');
+  });
+
+  it('falls back to raw.Created_Time when no date fields are filled at all', () => {
+    const created = '2026-01-15T00:00:00Z';
+    const journey = { id: 'j1', name: 'SO 1', stage: '', refValues: {}, raw: { Created_Time: created }, syncedAt: new Date() };
+    const summary = buildJourneySummary(journey, dateDrivenConfig);
+    expect(summary?.stage_index).toBe(1);
   });
 });

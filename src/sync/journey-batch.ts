@@ -3,6 +3,7 @@ import type { TenantConfig } from '../config/types.js';
 import { invalidateJourneysCache } from '../lib/journeys-cache.js';
 import { prisma } from '../lib/prisma.js';
 import type { ZohoRecord } from '../lib/zoho-client.js';
+import { extractCreatedTime, isDateDrivenJourney, resolveDateDrivenStage } from './date-stage-resolve.js';
 import { resolveStageIndex } from './stage-resolve.js';
 import { withBatchRetry } from './with-retry.js';
 
@@ -44,15 +45,26 @@ export function planJourneyBatch(
 ): JourneyBatchPlan {
   const issues: JourneyBatchIssue[] = [];
   const upserts: JourneyUpsertItem[] = [];
+  const dateDriven = isDateDrivenJourney(tenantConfig.journey.stages);
 
   for (const raw of rawRecords) {
     const zohoRecordId = String(raw.id);
     const stageValueRaw = raw[tenantConfig.zoho.journey_stage_field];
     const stageValue = typeof stageValueRaw === 'string' ? stageValueRaw : null;
 
+    const refValues: Record<string, unknown> = {};
+    for (const rf of tenantConfig.reference_fields) {
+      refValues[rf.crm_field] = raw[rf.crm_field] ?? null;
+    }
+
     let stageIndex: number | null = null;
 
-    if (!stageValue) {
+    // Date-driven journeys don't treat a blank/unmatched Stage value as a
+    // config problem — it's the normal case (see date-stage-resolve.ts), so
+    // no MISSING_STAGE/UNKNOWN_STAGE issue is logged for it here.
+    if (dateDriven) {
+      stageIndex = resolveDateDrivenStage(tenantConfig.journey.stages, refValues, extractCreatedTime(raw)).stageIndex;
+    } else if (!stageValue) {
       issues.push({ zohoRecordId, field: tenantConfig.zoho.journey_stage_field, rawValue: '', reason: 'MISSING_STAGE' });
     } else {
       const resolved = resolveStageIndex(tenantConfig.journey, stageValue);
@@ -69,11 +81,6 @@ export function planJourneyBatch(
     if (!contactId) {
       issues.push({ zohoRecordId, field: tenantConfig.zoho.journey_contact_lookup_field, rawValue: zohoContactId ?? '', reason: 'ORPHAN_JOURNEY' });
       continue;
-    }
-
-    const refValues: Record<string, unknown> = {};
-    for (const rf of tenantConfig.reference_fields) {
-      refValues[rf.crm_field] = raw[rf.crm_field] ?? null;
     }
 
     const nameRaw = raw[tenantConfig.zoho.journey_name_field];

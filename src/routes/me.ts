@@ -4,6 +4,7 @@ import { sendWithEtag } from '../lib/http-cache.js';
 import { buildJourneySummary, buildStageTimeline, type JourneySummary } from '../lib/journey-view.js';
 import { getCachedJourneys, setCachedJourneys } from '../lib/journeys-cache.js';
 import { prisma } from '../lib/prisma.js';
+import { extractCreatedTime, isDateDrivenJourney, resolveDateDrivenStage } from '../sync/date-stage-resolve.js';
 
 export async function registerMeRoutes(app: FastifyInstance) {
   app.get('/me', { preHandler: requireAuth }, async (req, reply) => {
@@ -54,9 +55,15 @@ export async function registerMeRoutes(app: FastifyInstance) {
     const payload: Record<string, unknown> = { ...summary };
 
     if (summary.status === 'in_progress') {
-      const stageHistoryRows = await prisma.stageHistory.findMany({ where: { journeyId: journey.id } });
-      const changedAtByStage = new Map(stageHistoryRows.map((r) => [r.toStage, r.changedAt]));
-      payload.stage_timeline = buildStageTimeline(app.tenantConfig.journey.stages, summary.stage_index, changedAtByStage);
+      if (isDateDrivenJourney(app.tenantConfig.journey.stages)) {
+        const refValues = (journey.refValues ?? {}) as Record<string, unknown>;
+        const createdTime = extractCreatedTime(journey.raw);
+        payload.stage_timeline = resolveDateDrivenStage(app.tenantConfig.journey.stages, refValues, createdTime).timeline;
+      } else {
+        const stageHistoryRows = await prisma.stageHistory.findMany({ where: { journeyId: journey.id } });
+        const changedAtByStage = new Map(stageHistoryRows.map((r) => [r.toStage, r.changedAt]));
+        payload.stage_timeline = buildStageTimeline(app.tenantConfig.journey.stages, summary.stage_index, changedAtByStage);
+      }
     }
     // pre_journey / on_hold: no stage_timeline field — there's no live
     // journey-progress position to show a timeline against.

@@ -24,6 +24,7 @@ const tenantConfig: TenantConfig = {
   journey: {
     label_singular: 'Project',
     label_plural: 'Projects',
+    empty_state_copy: 'Your project is being set up.',
     stages: [{ type: 'journey', index: 1, crm_value: 'Site Survey', display: 'Site Survey', owner: 'elgris', next_copy: 'x' }],
   },
   reference_fields: [],

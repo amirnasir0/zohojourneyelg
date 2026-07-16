@@ -44,6 +44,10 @@ export async function runIncrementalSync(zohoClient: ZohoClient, tenantConfig: T
     const journeyFields = uniqueFields([
       'id',
       'Modified_Time',
+      // Fallback "journey started" timestamp for date-driven stage
+      // resolution (see date-stage-resolve.ts) when a journey's own first
+      // milestone date field is still empty. Harmless/unused otherwise.
+      'Created_Time',
       tenantConfig.zoho.journey_stage_field,
       tenantConfig.zoho.journey_name_field,
       tenantConfig.zoho.journey_contact_lookup_field,

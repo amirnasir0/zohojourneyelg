@@ -199,3 +199,49 @@ for Elgris, not just reporting success.
 MSG91 SMS fallback remains unconfigured (`MSG91_API_KEY` unset in `.env`) — fine as a fallback gap for now
 since the primary WhatsApp channel works, but worth configuring before relying on the fallback path for
 customers without WhatsApp.
+
+## Journey source switched from Deals to Sales_Orders (16 Jul) — real installation stages found
+
+M7d's disposition review found that 0 of 6,061 Deals ever matched any of the 5 configured "journey" stages —
+the real installation-journey data was never on Deals at all. Confirmed live (via the app's own Zoho
+credentials, not the MCP Zoho connector — that one turned out to be authenticated to a different org,
+Webspecia's own internal CRM, not Elgris's; see the investigation in this session's history if the org
+mismatch recurs): Elgris's `Sales_Orders` module has a `Stage` picklist with the real 6-value pipeline
+(Material Dispatch, Construction, Net Metering, Disbursement, Subsidy Redeem, Subsidy Received) plus a
+"Process Dates" section of per-milestone date fields. But `Stage` itself is populated on only 3 of 1,075
+scanned Sales Orders (0.3%) — so progress is now derived from **which date fields are filled**, not from
+`Stage` (see `src/sync/date-stage-resolve.ts`). `zoho.journey_module` is now `Sales_Orders`,
+`journey_name_field` is `Subject` (not `Deal_Name`, which is a lookup object on this module, not text).
+
+**Excluded date fields, pending Elgris confirmation**: `Sanction_Date`, `Application_Submission`,
+`Accounts_Approval`, `Release_Order_Date`, `Documents_Upload_Date`, `Disbursement_Date_2`,
+`Sales_Order_closed_date` all exist on the module but aren't in the configured 8-stage sequence.
+`Sanction_Date` and `Application_Submission` look customer-meaningful for a subsidy journey in particular —
+flagged for Elgris to confirm; adding any of them later is a config-only change (add a stage entry with a
+`date_field`), no code change needed.
+
+**Stage order is a placeholder** ("my logic, revise later" per explicit instruction) — Sales Order → Material
+Dispatch → Construction → Net Metering → Bond Completion → Disbursement → Subsidy Redeem → Subsidy Received.
+Not confirmed against Elgris's actual process. Same for all `next_copy`/`owner` text on the new stages.
+
+**Action item — Option B, dual-source, logged as a fast-follow candidate, not built**: switching
+`journey_module` exclusively to `Sales_Orders` means a contact with a Closed Won Deal but no Sales Order yet
+sees the empty state (now updated to "Your project is being set up..." rather than a cold "no journeys" —
+see below), not a pre-sales pipeline view. If Elgris wants pre-sales Deal-pipeline visibility to coexist with
+the post-sale Sales_Orders installation timeline, that needs a `source_module`-style discriminator on
+`journeys` (today's schema/sync assumes one module feeds one journey type) plus a decision for what happens
+when a contact has both. Not scoped or built — Option A (Sales_Orders exclusive) was chosen for now since the
+Deals-based progress bar was already showing nothing meaningful for any customer (per the 0/6,061 finding
+above).
+
+**Known gap — webhooks still target Deals**: `docs/ZOHO-WEBHOOK-SETUP.md`'s two Workflow Rules were configured
+for the `Deals` module's `Stage` field changes. They're now mismatched with the actual journey source
+(`Sales_Orders`) — instant push-on-stage-change won't fire for the real installation pipeline until the
+Workflow Rules are recreated against `Sales_Orders`. The 15-min incremental sync remains the fallback, so
+this degrades to "up to 15 min delay" rather than "broken," but it's a real gap, not yet addressed — out of
+scope for this change, which was config/sync/read-path only.
+
+**Stray Sales Order data quality**: `Stage`'s picklist has a stray lowercase `"stage"` value (bad data entry
+in at least one real record, not a real workflow status) — needs no code handling, the date-driven design
+doesn't depend on `Stage` being clean. Worth a future data-hygiene pass with Elgris, same pattern as the
+orphan-contact-phone CSV.

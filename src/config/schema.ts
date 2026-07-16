@@ -47,6 +47,14 @@ const journeyStageSchema = z.object({
   owner: z.string().min(1),
   next_copy: z.string().min(1),
   _review: z.boolean().optional(),
+  // When set, this stage's timeline position/completion is derived from a
+  // CRM date field's presence/value instead of matching crm_value against
+  // the raw stage picklist. If ANY journey-type stage in a tenant's config
+  // sets this, the whole journey resolves in date-driven mode — see
+  // src/sync/date-stage-resolve.ts. Exists because some CRM modules (Elgris's
+  // Sales_Orders) barely populate their Stage picklist in practice but do
+  // reliably fill in per-milestone date fields.
+  date_field: z.string().min(1).optional(),
 });
 
 const preJourneyStageSchema = z.object({ type: z.literal('pre_journey'), ...nonJourneyStageFields });
@@ -59,6 +67,10 @@ const journeySchema = z.object({
   label_singular: z.string().min(1),
   label_plural: z.string().min(1),
   stages: z.array(stageSchema).min(1),
+  // Shown by the app when a verified customer has zero journeys — PRD §14
+  // "Contact with zero journeys → Empty state with tenant-configurable copy".
+  // Combined client-side with /config's tenant.support_whatsapp/support_email.
+  empty_state_copy: z.string().min(1),
 });
 
 const referenceFieldSchema = z.object({

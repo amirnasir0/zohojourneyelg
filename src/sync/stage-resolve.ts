@@ -31,3 +31,9 @@ export function resolveStageIndex(journeyConfig: TenantConfig['journey'], stageV
   }
   return { stageIndex: null, type: stage.type };
 }
+
+export type JourneyStageConfig = Extract<TenantConfig['journey']['stages'][number], { type: 'journey' }>;
+
+export function isJourneyStage(stage: TenantConfig['journey']['stages'][number]): stage is JourneyStageConfig {
+  return stage.type === 'journey';
+}

@@ -1,11 +1,15 @@
 import type { TenantConfig } from '../config/types.js';
-import { resolveStageIndex } from '../sync/stage-resolve.js';
+import { extractCreatedTime, isDateDrivenJourney, resolveDateDrivenStage } from '../sync/date-stage-resolve.js';
+import { isJourneyStage, resolveStageIndex, type JourneyStageConfig } from '../sync/stage-resolve.js';
+
+export { isJourneyStage, type JourneyStageConfig };
 
 export interface JourneyLike {
   id: string;
   name: string;
   stage: string;
   refValues: unknown;
+  raw: unknown;
   syncedAt: Date;
 }
 
@@ -46,7 +50,6 @@ function buildRefValues(refValues: unknown, tenantConfig: TenantConfig): Record<
  */
 export function buildJourneySummary(journey: JourneyLike, tenantConfig: TenantConfig): JourneySummary | null {
   const totalStages = tenantConfig.journey.stages.filter((s) => s.type === 'journey').length;
-  const resolved = resolveStageIndex(tenantConfig.journey, journey.stage);
 
   const base = {
     id: journey.id,
@@ -56,6 +59,22 @@ export function buildJourneySummary(journey: JourneyLike, tenantConfig: TenantCo
     ref_values: buildRefValues(journey.refValues, tenantConfig),
     updated_at: journey.syncedAt,
   };
+
+  // Date-driven journeys have no pre_journey/on_hold/hidden concept — every
+  // record that reaches this module (e.g. a Sales Order) is inherently "in
+  // progress" toward installation, so the Stage picklist isn't consulted for
+  // status at all (see date-stage-resolve.ts for why: it's barely populated
+  // in practice for Elgris's Sales_Orders).
+  if (isDateDrivenJourney(tenantConfig.journey.stages)) {
+    const refValues = (journey.refValues ?? {}) as Record<string, unknown>;
+    const createdTime = extractCreatedTime(journey.raw);
+    const { stageIndex } = resolveDateDrivenStage(tenantConfig.journey.stages, refValues, createdTime);
+    const rawPct = totalStages > 0 ? Math.round((stageIndex / totalStages) * 100) : 0;
+    const progressPct = Math.min(100, Math.max(0, rawPct));
+    return { ...base, stage_index: stageIndex, progress_pct: progressPct, status: 'in_progress' };
+  }
+
+  const resolved = resolveStageIndex(tenantConfig.journey, journey.stage);
 
   if (resolved.type === 'hidden') {
     return null;
@@ -98,12 +117,6 @@ export interface StageTimelineEntry {
  * pre_journey/on_hold/hidden stages never appear as timeline rows, they're
  * not part of the installation sequence.
  */
-export type JourneyStageConfig = Extract<TenantConfig['journey']['stages'][number], { type: 'journey' }>;
-
-export function isJourneyStage(stage: TenantConfig['journey']['stages'][number]): stage is JourneyStageConfig {
-  return stage.type === 'journey';
-}
-
 export function buildStageTimeline(
   stages: TenantConfig['journey']['stages'],
   stageIndex: number | null,

@@ -27,6 +27,7 @@ const tenantConfig: TenantConfig = {
   journey: {
     label_singular: 'Project',
     label_plural: 'Projects',
+    empty_state_copy: 'Your project is being set up.',
     stages: [{ type: 'journey', index: 1, crm_value: 'Site Survey', display: 'Site Survey', owner: 'elgris', next_copy: 'x' }],
   },
   reference_fields: [{ crm_field: 'National_Portal_No', display: 'National Portal No.' }],
@@ -95,5 +96,55 @@ describe('planJourneyBatch', () => {
 
     expect(upserts).toEqual([]);
     expect(issues).toEqual([{ zohoRecordId: 'd1', field: 'Contact_Name', rawValue: '', reason: 'ORPHAN_JOURNEY' }]);
+  });
+});
+
+describe('planJourneyBatch — date-driven mode', () => {
+  const dateDrivenConfig: TenantConfig = {
+    ...tenantConfig,
+    journey: {
+      ...tenantConfig.journey,
+      stages: [
+        { type: 'journey', index: 1, crm_value: 'Sales Order', date_field: 'Sales_Order', display: 'Sales Order', owner: 'elgris', next_copy: 'x' },
+        { type: 'journey', index: 2, crm_value: 'Construction', date_field: 'Construction_Date', display: 'Construction', owner: 'elgris', next_copy: 'y' },
+      ],
+    },
+    reference_fields: [
+      { crm_field: 'Sales_Order', display: 'Sales Order Date' },
+      { crm_field: 'Construction_Date', display: 'Construction Date' },
+    ],
+  };
+
+  it('computes stageIndex from date fields, ignoring a blank Stage value with no MISSING_STAGE issue', () => {
+    const contactIds = new Map([['zc1', 'local-contact-1']]);
+    const { upserts, issues } = planJourneyBatch(
+      [{ id: 'so1', Contact_Name: { id: 'zc1' }, Construction_Date: '2026-03-01' }],
+      dateDrivenConfig,
+      contactIds,
+    );
+
+    expect(issues).toEqual([]);
+    expect(upserts[0]?.stageIndex).toBe(2);
+    expect(upserts[0]?.stage).toBe('');
+  });
+
+  it('does not log UNKNOWN_STAGE even when the raw Stage value matches nothing configured', () => {
+    const contactIds = new Map([['zc1', 'local-contact-1']]);
+    const { issues } = planJourneyBatch(
+      [{ id: 'so1', Stage: 'stage', Contact_Name: { id: 'zc1' } }],
+      dateDrivenConfig,
+      contactIds,
+    );
+    expect(issues).toEqual([]);
+  });
+
+  it('still logs ORPHAN_JOURNEY when the contact does not resolve, same as value-matched mode', () => {
+    const { upserts, issues } = planJourneyBatch(
+      [{ id: 'so1', Contact_Name: { id: 'zc-missing' } }],
+      dateDrivenConfig,
+      new Map(),
+    );
+    expect(upserts).toEqual([]);
+    expect(issues).toEqual([{ zohoRecordId: 'so1', field: 'Contact_Name', rawValue: 'zc-missing', reason: 'ORPHAN_JOURNEY' }]);
   });
 });

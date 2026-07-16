@@ -17,6 +17,7 @@ export async function registerConfigRoutes(app: FastifyInstance) {
       journey: {
         label_singular: journey.label_singular,
         label_plural: journey.label_plural,
+        empty_state_copy: journey.empty_state_copy,
         stages: journey.stages
           .filter(isJourneyStage)
           .map((s) => ({ index: s.index, display: s.display, owner: s.owner, next_copy: s.next_copy })),
