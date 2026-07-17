@@ -24,6 +24,11 @@ model TenantConfig {
 model Contact {
   id             String   @id @default(uuid())
   zohoContactId  String   @unique @map("zoho_contact_id")
+  // Nullable: resolved lazily on first ticket creation (search/create against
+  // Desk), not backfilled by the CRM contact sync. A collision here would mean
+  // two local contacts got bridged to the same Desk contact — real data
+  // corruption worth failing loudly on, hence @unique rather than a soft check.
+  deskContactId  String?  @unique @map("desk_contact_id")
   mobileE164     String   @unique @map("mobile_e164")
   altMobileE164  String?  @map("alt_mobile_e164")
   fullName       String?  @map("full_name")
@@ -34,6 +39,7 @@ model Contact {
   journeys       Journey[]
   sessions       Session[]
   deviceTokens   DeviceToken[]
+  tickets        Ticket[]
 
   @@index([altMobileE164])
   @@map("contacts")
@@ -72,6 +78,33 @@ model StageHistory {
   journey    Journey @relation(fields: [journeyId], references: [id], onDelete: Cascade)
 
   @@map("stage_history")
+}
+
+model Ticket {
+  id            String    @id @default(uuid())
+  deskTicketId  String    @unique @map("desk_ticket_id")
+  contactId     String    @map("contact_id")
+  ticketNumber  String    @map("ticket_number")
+  subject       String
+  description   String?
+  category      String?
+  status        String
+  statusDisplay String    @map("status_display")
+  ownerName     String?   @map("owner_name")
+  coOwnerName   String?   @map("co_owner_name")
+  priority      String?
+  createdAt     DateTime  @map("created_at")
+  updatedAt     DateTime  @map("updated_at")
+  // Local write timestamp, distinct from createdAt/updatedAt (which mirror
+  // Desk's own createdTime/modifiedTime) — lets sync tell "when did our copy
+  // last touch this row" apart from "when did Zoho's record last change."
+  syncedAt      DateTime  @map("synced_at")
+  raw           Json
+
+  contact       Contact @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  @@index([contactId])
+  @@map("tickets")
 }
 
 model OtpAttempt {

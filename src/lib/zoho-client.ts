@@ -1,14 +1,7 @@
 import { setTimeout as sleep } from 'node:timers/promises';
+import { accountsDomain, fetchWithNetworkRetry } from './zoho-http.js';
 
-const ACCOUNTS_DOMAINS: Record<string, string> = {
-  in: 'accounts.zoho.in',
-  com: 'accounts.zoho.com',
-  eu: 'accounts.zoho.eu',
-  au: 'accounts.zoho.com.au',
-  jp: 'accounts.zoho.jp',
-  cn: 'accounts.zoho.com.cn',
-  ca: 'accounts.zohocloud.ca',
-};
+export { accountsDomain };
 
 const API_DOMAINS: Record<string, string> = {
   in: 'www.zohoapis.in',
@@ -19,14 +12,6 @@ const API_DOMAINS: Record<string, string> = {
   cn: 'www.zohoapis.com.cn',
   ca: 'www.zohoapis.ca',
 };
-
-export function accountsDomain(dc: string): string {
-  const domain = ACCOUNTS_DOMAINS[dc];
-  if (!domain) {
-    throw new Error(`Unknown Zoho data center "${dc}"`);
-  }
-  return domain;
-}
 
 export function apiDomain(dc: string): string {
   const domain = API_DOMAINS[dc];
@@ -62,52 +47,6 @@ const MAX_429_RETRIES = 3;
 const TOKEN_EXPIRY_SAFETY_MS = 60_000;
 const REQUEST_TIMEOUT_MS = 30_000;
 
-// Fix 6: on an unreliable connection, fetch() itself can throw before any
-// response arrives (dropped wifi, DNS blip, sleep/wake, a stalled socket).
-// That's distinct from a received HTTP error status (401/429/4xx), which is
-// handled separately below and is never retried here.
-const RETRYABLE_NETWORK_CODES = new Set(['ECONNRESET', 'ETIMEDOUT', 'EAI_AGAIN', 'ENOTFOUND', 'ECONNREFUSED']);
-const MAX_NETWORK_RETRIES = 5;
-const NETWORK_RETRY_BASE_MS = 2_000;
-const NETWORK_RETRY_MAX_MS = 30_000;
-
-export function isRetryableNetworkError(err: unknown): boolean {
-  if (!(err instanceof Error)) {
-    return false;
-  }
-  const code = (err as NodeJS.ErrnoException).code ?? (err.cause as NodeJS.ErrnoException | undefined)?.code;
-  if (code && RETRYABLE_NETWORK_CODES.has(code)) {
-    return true;
-  }
-  if (err.name === 'TimeoutError' || err.name === 'AbortError') {
-    return true;
-  }
-  const causeMessage = err.cause instanceof Error ? err.cause.message : undefined;
-  return /socket hang up/i.test(err.message) || (causeMessage ? /socket hang up/i.test(causeMessage) : false);
-}
-
-export function networkBackoffDelayMs(attempt: number): number {
-  return Math.min(NETWORK_RETRY_BASE_MS * 2 ** attempt, NETWORK_RETRY_MAX_MS);
-}
-
-async function fetchWithNetworkRetry(url: string, init: RequestInit): Promise<Response> {
-  let lastErr: unknown;
-  for (let attempt = 0; attempt < MAX_NETWORK_RETRIES; attempt++) {
-    try {
-      return await fetch(url, init);
-    } catch (err) {
-      lastErr = err;
-      if (!isRetryableNetworkError(err) || attempt === MAX_NETWORK_RETRIES - 1) {
-        throw err;
-      }
-      const delay = networkBackoffDelayMs(attempt);
-      console.error(`[zoho-client] network error (attempt ${attempt + 1}/${MAX_NETWORK_RETRIES}), retrying in ${delay}ms...`, err);
-      await sleep(delay);
-    }
-  }
-  throw lastErr;
-}
-
 function requireEnv(name: string): string {
   const value = process.env[name];
   if (!value) {
@@ -137,7 +76,7 @@ class ZohoApiClient implements ZohoClient {
       refresh_token: this.refreshToken,
     });
 
-    const res = await fetchWithNetworkRetry(url, { method: 'POST', body: params, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+    const res = await fetchWithNetworkRetry(url, { method: 'POST', body: params, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) }, '[zoho-client]');
     const data = (await res.json()) as { access_token?: string; expires_in?: number; error?: string };
 
     if (!res.ok || !data.access_token) {
@@ -171,13 +110,17 @@ class ZohoApiClient implements ZohoClient {
     const token = await this.getAccessToken();
     const url = `https://${apiDomain(this.dc)}${path}`;
 
-    const res = await fetchWithNetworkRetry(url, {
-      headers: {
-        Authorization: `Zoho-oauthtoken ${token}`,
-        ...opts.headers,
+    const res = await fetchWithNetworkRetry(
+      url,
+      {
+        headers: {
+          Authorization: `Zoho-oauthtoken ${token}`,
+          ...opts.headers,
+        },
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       },
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    });
+      '[zoho-client]',
+    );
 
     if (res.status === 401 && !retriedAuth) {
       await this.getAccessToken(true);

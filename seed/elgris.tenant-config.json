@@ -125,6 +125,23 @@
     },
     "salesorder_updated": {
       "record_id_field": "record_id"
+    },
+    "ticket_updated": {
+      "record_id_field": "record_id"
     }
+  },
+  "desk": {
+    "dc": "in",
+    "org_id": "60022843030",
+    "department_name": "Elgris Solar Power Systems Pvt Ltd",
+    "category_field": "category",
+    "status_display_map": {
+      "Open": "Open",
+      "In Progress": "In Progress",
+      "On Hold": "On Hold",
+      "Escalated": "Escalated",
+      "Closed": "Resolved"
+    },
+    "response_time_copy": "Our team typically responds within 24 hours."
   }
 }

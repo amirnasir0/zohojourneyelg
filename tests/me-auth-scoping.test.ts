@@ -62,6 +62,15 @@ const tenantConfig: TenantConfig = {
     journey_updated: { record_id_field: 'record_id', stage_field: 'stage', contact_id_field: 'contact_id', changed_at_field: 'changed_at' },
     contact_updated: { record_id_field: 'record_id' },
     salesorder_updated: { record_id_field: 'record_id' },
+    ticket_updated: { record_id_field: 'record_id' },
+  },
+  desk: {
+    dc: 'in',
+    org_id: '60022843030',
+    department_name: 'Elgris Solar Power Systems Pvt Ltd',
+    category_field: 'category',
+    status_display_map: { Open: 'Open', Closed: 'Resolved' },
+    response_time_copy: 'Our team typically responds within 24 hours.',
   },
 };
 

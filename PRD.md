@@ -2,7 +2,7 @@
 **Product:** White-label customer journey tracking backend for Zoho CRM businesses
 **Tenant #1:** Elgris Solar (funds initial build)
 **Vendor/Owner:** Cognidom Technologies Private Limited (Webspecia)
-**Version:** 2.0 | **Date:** 14 July 2026
+**Version:** 2.1 | **Date:** 16 July 2026
 **Frontend:** React Native (iOS & Android), config-driven branding
 **Source of truth per tenant:** Zoho CRM (Contacts + journey module)
 
@@ -23,8 +23,9 @@ Elgris Solar is tenant #1 and defines the reference implementation (24-stage sol
 
 - No multi-tenant shared database (one isolated deployment per client — see §4)
 - No customer self-registration (customers exist in CRM, created by the business)
-- No app→CRM write-back (except audit logs)
-- No Zoho Desk ticketing, no document upload (Phase 2)
+- No app→CRM write-back (except audit logs and Zoho Desk ticket creation, §11.4)
+- No document upload (Phase 2)
+- No ticket threads, replies, or attachments — Desk ticketing (§11.4) is create + track only; conversation-level features are a later phase
 - No admin/manager roles in-app (customer role only)
 
 ## 3. System Architecture
@@ -135,8 +136,27 @@ Single-row table holding the config JSON (§5) + version + updated_at. Secrets (
 | zoho_contact_id | text unique | |
 | mobile_e164 | text unique, indexed | normalized `+91XXXXXXXXXX` — login key |
 | full_name / email | text | |
+| desk_contact_id | text unique, nullable | Zoho Desk contact, lazily resolved on first ticket action (§11.4) |
 | raw | jsonb | full CRM payload |
 | synced_at | timestamptz | |
+
+### tickets  *(Zoho Desk, create + track only — see §11.4)*
+| Field | Type | Notes |
+|---|---|---|
+| id | uuid PK | |
+| desk_ticket_id | text unique | |
+| contact_id | uuid FK | |
+| ticket_number | text | Desk's human-facing ticket number |
+| subject | text | = category value at creation time |
+| description | text, nullable | |
+| category | text | raw Desk value |
+| status | text | raw Desk value |
+| status_display | text | resolved via tenant's `desk.status_display_map`, unmapped values pass through as-is |
+| owner_name / co_owner_name | text, nullable | |
+| priority | text, nullable | |
+| created_at / updated_at | timestamptz | Zoho Desk's own ticket timestamps |
+| raw | jsonb | full Desk payload |
+| synced_at | timestamptz | our own last-sync bookkeeping, distinct from created_at/updated_at above |
 
 ### journeys  *(generic — "deals" for Elgris, "applications" for Incksign)*
 | Field | Type | Notes |
@@ -195,14 +215,20 @@ RS256, 90-day expiry, `jti` validated against sessions (server-side revoke). `PO
 | GET | /me | Contact profile |
 | GET | /me/journeys | List with stage, stage_index, progress %, ref values — one call renders home screen |
 | GET | /me/journeys/:id | Full detail + stage_timeline (completed/current/pending, timestamps, per-stage `next_copy`) |
+| GET | /me/tickets/categories | Zoho Desk Category picklist values (cached, refreshed on sync) |
+| POST | /me/tickets | Create a support ticket — `{ category, description? }`; see duplicate-guard below |
+| GET | /me/tickets | List, newest first |
+| GET | /me/tickets/:id | Detail |
 | POST | /me/device-token | Register FCM token |
 | POST | /auth/send-otp, /auth/verify-otp, /auth/logout | Auth |
-| POST | /webhooks/zoho/journey-updated, /webhooks/zoho/contact-updated | Zoho → backend (secret-validated) |
+| POST | /webhooks/zoho/journey-updated, /webhooks/zoho/contact-updated, /webhooks/zoho/ticket-updated | Zoho → backend (secret-validated) |
 | GET | /healthz, /healthz/sync | Probes |
 
 **Payloads are screen-shaped, not entity-shaped** — home screen renders in one round trip. ETag/If-None-Match on all `/me/*` GETs so repeat opens cost ~0 bytes.
 
-**Authorization:** every journey query scoped `WHERE contact_id = jwt.sub`; foreign IDs return `404`.
+**Authorization:** every journey/ticket query scoped `WHERE contact_id = jwt.sub`; foreign IDs return `404`.
+
+**Ticket duplicate guard:** `POST /me/tickets` checks the local mirror for an existing ticket in the same category whose status isn't in the tenant's `desk.closed_statuses` list. If found, returns `409 { existing_ticket }` instead of creating a second one — the app decides whether to show the existing ticket or let the customer force a new one (`force: true` in the body bypasses the guard).
 
 ## 11. Zoho CRM Sync
 
@@ -220,6 +246,18 @@ RS256, 90-day expiry, `jti` validated against sessions (server-side revoke). `PO
 
 ### 11.3 Push on stage change
 Template from tenant config with `{stage}` / `{journey_label}` interpolation. Optional WhatsApp mirror via Interakt utility template (per-tenant toggle, per-message cost — client decision).
+
+### 11.4 Zoho Desk Ticketing (create + track)
+
+Scope is deliberately narrow: a customer can open a support ticket and see its status. No threads, replies, or attachments — that's a later phase (§18).
+
+- **Separate OAuth credential** from the CRM one (`ZOHO_DESK_REFRESH_TOKEN`), same accounts.zoho.\<dc\> token endpoint and mutex/refresh/retry pattern as CRM, but its own scope (`Desk.tickets.ALL,Desk.contacts.ALL,Desk.basic.READ,Desk.settings.READ`) and its own per-DC API base (`desk.zoho.in` etc.) — Desk's API requires an `orgId` header on every request, unlike CRM v8.
+- **Department resolution:** tenant config names a department (`desk.department_name`); resolved to its Desk-side ID once at boot/config-validation via the departments API and cached in-process — never re-resolved per request.
+- **Category field:** tenant config names the ticket field (`desk.category_field`, e.g. `"Category"`); its picklist values are fetched via Desk's field-metadata API and cached, refreshed on each sync pass. Ticket subject = the chosen category value; there's no separate free-text subject field in v1.
+- **Status display:** `desk.status_display_map` translates Desk's internal status values to customer-facing labels; an unmapped status passes through as-is rather than erroring (same "never crash on an unrecognized value" principle as journey stages, §11.1). `desk.closed_statuses` lists which raw values count as "closed" for the duplicate-ticket guard (§10).
+- **Contact bridge:** `contacts.desk_contact_id` is resolved lazily, on a customer's first ticket action — search Desk contacts by CRM reference first, then normalized phone/email; if none found, create a Desk contact from our contact data and cache the resulting ID. Zoho is never called on a customer's read path (§1's hard rule); ticket creation is the one write-path exception, same footing as the existing CRM webhook-driven writes.
+- **Sync:** tickets fold into the same 15-min incremental + nightly full-reconcile worker as contacts/journeys, scoped to tickets belonging to already-known local contacts.
+- **Instant updates:** a Desk Workflow (Desk's own automation UI, separate from CRM's Workflow Rules) posts to `POST /webhooks/zoho/ticket-updated` on ticket field changes, same secret-validated / fetch-by-ID / diff-before-write pattern as the CRM webhooks.
 
 ## 12. Performance Targets
 
@@ -293,5 +331,6 @@ Template from tenant config with `{stage}` / `{journey_label}` interpolation. Op
 | 1.5 | Ops dashboard; sales one-pager + demo video (Vently Air case-study format) |
 | 2 | Tenant #2: Incksign (DSC journey — Lead module blueprint already exists) or Hearwave (patient journey) |
 | 2 | Stage ETA intelligence (median days/stage from stage_history), documents vault (read-only CRM attachments), WhatsApp deep-link support button |
-| 3 | Zoho Desk ticketing module, document upload, post-completion "My System"-style retention tab |
+| 2+ | Desk ticket threads, replies, and attachments (create + track shipped in current scope, §11.4) |
+| 3 | Document upload, post-completion "My System"-style retention tab |
 | Later | Multi-tenant consolidation at 10+ clients; Zoho Marketplace / partner white-label channel |

@@ -113,6 +113,34 @@ const webhooksSchema = z.object({
   // date_field values + Stage against what's stored locally and no-ops
   // cleanly when nothing relevant changed. See src/webhooks/salesorder-updated.ts.
   salesorder_updated: recordIdOnlyWebhookSchema,
+  // Same record-id-only shape, fired from a Desk automation on ticket edit
+  // (a separate UI from CRM Workflow Rules — see docs/ZOHO-WEBHOOK-SETUP.md).
+  ticket_updated: recordIdOnlyWebhookSchema,
+});
+
+// Desk is a separate Zoho product from CRM: its own OAuth client/scope/refresh
+// token (ZOHO_DESK_* env vars), its own dc/org_id (Desk's org_id can differ
+// from CRM's for the same tenant), and its own REST API shape. See
+// src/lib/zoho-desk-client.ts.
+const deskSchema = z.object({
+  dc: z.string().min(1),
+  org_id: z.string().min(1),
+  // Resolved to a department ID at boot via the /departments API (name match,
+  // not hardcoded) — see boot-time desk context wiring. Matched after
+  // trimming whitespace: Zoho Desk department names have been observed to
+  // carry stray trailing spaces in the admin UI.
+  department_name: z.string().min(1),
+  // apiName of the ticket field to read/write the customer-visible category
+  // from — its allowed values are fetched live via
+  // GET /organizationFields?module=tickets rather than hardcoded, so a tenant
+  // can add/rename category picklist values in Desk without a deploy.
+  category_field: z.string().min(1),
+  // Raw Desk status value -> customer-facing display copy. A status with no
+  // entry here falls back to the raw value as-is.
+  status_display_map: z.record(z.string()),
+  // Shown alongside a newly-created ticket, e.g. "Our team typically responds
+  // within 24 hours."
+  response_time_copy: z.string().min(1),
 });
 
 export const tenantConfigSchema = z.object({
@@ -122,4 +150,5 @@ export const tenantConfigSchema = z.object({
   reference_fields: z.array(referenceFieldSchema),
   notifications: notificationsSchema,
   webhooks: webhooksSchema,
+  desk: deskSchema,
 });

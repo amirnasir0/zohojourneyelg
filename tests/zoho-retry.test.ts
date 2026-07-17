@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isRetryableNetworkError, networkBackoffDelayMs } from '../src/lib/zoho-client.js';
+import { isRetryableNetworkError, networkBackoffDelayMs } from '../src/lib/zoho-http.js';
 
 function errWithCode(code: string): Error {
   const err = new Error(`${code} happened`) as NodeJS.ErrnoException;

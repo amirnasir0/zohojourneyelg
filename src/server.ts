@@ -5,7 +5,9 @@ import { loadTenantConfig } from './config/loader.js';
 import { isPrismaConnectionError } from './lib/prisma-errors.js';
 import { prisma } from './lib/prisma.js';
 import { redis } from './lib/redis.js';
+import { resolveDeskContext } from './lib/desk-context.js';
 import { createZohoClient } from './lib/zoho-client.js';
+import { createZohoDeskClient } from './lib/zoho-desk-client.js';
 import { registerAuthRoutes } from './routes/auth.js';
 import { registerConfigRoutes } from './routes/config.js';
 import { registerHealthzRoutes } from './routes/healthz.js';
@@ -79,6 +81,21 @@ try {
 } catch (err) {
   app.log.warn({ err }, '[webhooks] Zoho client not configured — fetch-by-id fallback unavailable until ZOHO_* env vars are set');
   app.decorate('zohoClient', undefined);
+}
+
+// Same fallback shape as zohoClient above, plus a live department/category
+// resolution step (see resolveDeskContext) — both must succeed for ticket
+// routes/webhook to be available; either failing degrades to 503 on those
+// specific endpoints rather than crashing boot.
+try {
+  const deskClient = createZohoDeskClient(app.tenantConfig.desk.dc, app.tenantConfig.desk.org_id);
+  const deskContext = await resolveDeskContext(deskClient, app.tenantConfig);
+  app.decorate('deskClient', deskClient);
+  app.decorate('deskContext', deskContext);
+} catch (err) {
+  app.log.warn({ err }, '[desk] Zoho Desk not configured or unreachable — ticket routes unavailable until ZOHO_DESK_* env vars are set and department/category config is verified');
+  app.decorate('deskClient', undefined);
+  app.decorate('deskContext', undefined);
 }
 
 await registerHealthzRoutes(app);
