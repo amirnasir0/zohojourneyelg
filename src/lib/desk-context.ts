@@ -1,9 +1,25 @@
 import type { TenantConfig } from '../config/types.js';
-import type { ZohoDeskClient } from './zoho-desk-client.js';
+import { createZohoDeskClient, type ZohoDeskClient } from './zoho-desk-client.js';
 
 export interface DeskContext {
   departmentId: string;
   categoryValues: string[];
+}
+
+/**
+ * Shared by sync entrypoints (scheduler.ts, sync-once.ts, reconcile-once.ts)
+ * that need the Desk client for the tickets phase but not the full
+ * department/category boot context server.ts resolves for routes — a
+ * missing/misconfigured ZOHO_DESK_* just means the tickets phase is skipped,
+ * same "not configured" degradation as the CRM zohoClient elsewhere.
+ */
+export function tryCreateDeskClient(tenantConfig: TenantConfig, logPrefix: string): ZohoDeskClient | undefined {
+  try {
+    return createZohoDeskClient(tenantConfig.desk.dc, tenantConfig.desk.org_id);
+  } catch (err) {
+    console.error(`${logPrefix} Zoho Desk client not configured — tickets phase unavailable until ZOHO_DESK_* env vars are set`, err);
+    return undefined;
+  }
 }
 
 /**

@@ -216,7 +216,7 @@ RS256, 90-day expiry, `jti` validated against sessions (server-side revoke). `PO
 | GET | /me/journeys | List with stage, stage_index, progress %, ref values — one call renders home screen |
 | GET | /me/journeys/:id | Full detail + stage_timeline (completed/current/pending, timestamps, per-stage `next_copy`) |
 | GET | /me/tickets/categories | Zoho Desk Category picklist values (cached, refreshed on sync) |
-| POST | /me/tickets | Create a support ticket — `{ category, description? }`; see duplicate-guard below |
+| POST | /me/tickets | Create a support ticket — `{ category, subject, description? }`; see duplicate-guard below |
 | GET | /me/tickets | List, newest first |
 | GET | /me/tickets/:id | Detail |
 | POST | /me/device-token | Register FCM token |
@@ -228,7 +228,7 @@ RS256, 90-day expiry, `jti` validated against sessions (server-side revoke). `PO
 
 **Authorization:** every journey/ticket query scoped `WHERE contact_id = jwt.sub`; foreign IDs return `404`.
 
-**Ticket duplicate guard:** `POST /me/tickets` checks the local mirror for an existing ticket in the same category whose status isn't in the tenant's `desk.closed_statuses` list. If found, returns `409 { existing_ticket }` instead of creating a second one — the app decides whether to show the existing ticket or let the customer force a new one (`force: true` in the body bypasses the guard).
+**Ticket duplicate guard:** `POST /me/tickets` checks the local mirror for an existing ticket in the same category whose Desk `statusType` isn't `Closed` (derived live from Desk's own Open/On Hold/Closed classification per ticket, not a tenant-maintained status list). If found, returns `409 { existing_ticket }` instead of creating a second one — the app decides whether to show the existing ticket or let the customer force a new one (`force: true` in the body bypasses the guard).
 
 ## 11. Zoho CRM Sync
 
@@ -251,10 +251,10 @@ Template from tenant config with `{stage}` / `{journey_label}` interpolation. Op
 
 Scope is deliberately narrow: a customer can open a support ticket and see its status. No threads, replies, or attachments — that's a later phase (§18).
 
-- **Separate OAuth credential** from the CRM one (`ZOHO_DESK_REFRESH_TOKEN`), same accounts.zoho.\<dc\> token endpoint and mutex/refresh/retry pattern as CRM, but its own scope (`Desk.tickets.ALL,Desk.contacts.ALL,Desk.basic.READ,Desk.settings.READ`) and its own per-DC API base (`desk.zoho.in` etc.) — Desk's API requires an `orgId` header on every request, unlike CRM v8.
-- **Department resolution:** tenant config names a department (`desk.department_name`); resolved to its Desk-side ID once at boot/config-validation via the departments API and cached in-process — never re-resolved per request.
-- **Category field:** tenant config names the ticket field (`desk.category_field`, e.g. `"Category"`); its picklist values are fetched via Desk's field-metadata API and cached, refreshed on each sync pass. Ticket subject = the chosen category value; there's no separate free-text subject field in v1.
-- **Status display:** `desk.status_display_map` translates Desk's internal status values to customer-facing labels; an unmapped status passes through as-is rather than erroring (same "never crash on an unrecognized value" principle as journey stages, §11.1). `desk.closed_statuses` lists which raw values count as "closed" for the duplicate-ticket guard (§10).
+- **Separate OAuth credential** from the CRM one (`ZOHO_DESK_REFRESH_TOKEN`), same accounts.zoho.\<dc\> token endpoint and mutex/refresh/retry pattern as CRM, but its own scope (`Desk.tickets.ALL Desk.contacts.ALL Desk.basic.READ Desk.settings.READ`) and its own per-DC API base (`desk.zoho.in` etc.) — Desk's API requires an `orgId` header on every request, unlike CRM v8.
+- **Department resolution:** tenant config names a department (`desk.department_name`); resolved to its Desk-side ID once at boot via the departments API (trimmed-name match — Desk department names have been observed to carry stray trailing whitespace in the admin UI) and cached in-process — never re-resolved per request.
+- **Category field:** tenant config names the ticket field (`desk.category_field`, e.g. `"category"`); its picklist values are fetched via `GET /organizationFields?module=tickets` and cached at boot. Category and subject are separate: category is a required picklist selection, subject is customer-entered free text.
+- **Status display:** `desk.status_display_map` translates Desk's internal status values to customer-facing labels; an unmapped status passes through as-is rather than erroring (same "never crash on an unrecognized value" principle as journey stages, §11.1). "Closed" for the duplicate-ticket guard (§10) is derived from Desk's own per-ticket `statusType` field (`Open` / `On Hold` / `Closed`), not a tenant-maintained status list — it doesn't drift when a tenant renames or adds a status value.
 - **Contact bridge:** `contacts.desk_contact_id` is resolved lazily, on a customer's first ticket action — search Desk contacts by CRM reference first, then normalized phone/email; if none found, create a Desk contact from our contact data and cache the resulting ID. Zoho is never called on a customer's read path (§1's hard rule); ticket creation is the one write-path exception, same footing as the existing CRM webhook-driven writes.
 - **Sync:** tickets fold into the same 15-min incremental + nightly full-reconcile worker as contacts/journeys, scoped to tickets belonging to already-known local contacts.
 - **Instant updates:** a Desk Workflow (Desk's own automation UI, separate from CRM's Workflow Rules) posts to `POST /webhooks/zoho/ticket-updated` on ticket field changes, same secret-validated / fetch-by-ID / diff-before-write pattern as the CRM webhooks.

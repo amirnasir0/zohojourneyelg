@@ -1,5 +1,6 @@
 import { schedule } from 'node-cron';
 import type { TenantConfig } from '../config/types.js';
+import { tryCreateDeskClient } from '../lib/desk-context.js';
 import { createZohoClient } from '../lib/zoho-client.js';
 import { runIncrementalSync } from './incremental.js';
 import { runFullReconcile } from './reconcile.js';
@@ -35,11 +36,13 @@ export function startSyncScheduler(tenantConfig: TenantConfig): StopScheduler {
     console.error('[sync] field mapping validation failed to run', err);
   });
 
+  const deskClient = tryCreateDeskClient(tenantConfig, '[sync]');
+
   const incrementalTask = schedule(
     '*/15 * * * *',
     async () => {
       try {
-        await runIncrementalSync(zohoClient, tenantConfig);
+        await runIncrementalSync(zohoClient, tenantConfig, deskClient);
       } catch (err) {
         console.error('[sync] incremental sync failed', err);
       }
@@ -51,7 +54,7 @@ export function startSyncScheduler(tenantConfig: TenantConfig): StopScheduler {
     '0 2 * * *',
     async () => {
       try {
-        await runFullReconcile(zohoClient, tenantConfig);
+        await runFullReconcile(zohoClient, tenantConfig, deskClient);
       } catch (err) {
         console.error('[sync] full reconcile failed', err);
       }

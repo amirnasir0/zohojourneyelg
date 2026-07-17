@@ -1,4 +1,5 @@
 import { loadTenantConfig } from '../config/loader.js';
+import { tryCreateDeskClient } from '../lib/desk-context.js';
 import { createZohoClient } from '../lib/zoho-client.js';
 import { prisma } from '../lib/prisma.js';
 import { runFullReconcile } from '../sync/reconcile.js';
@@ -39,11 +40,14 @@ async function main(): Promise<void> {
   }
   console.log('[sync:reconcile] field mapping OK');
 
-  await runFullReconcile(zohoClient, tenantConfig);
+  const deskClient = tryCreateDeskClient(tenantConfig, '[sync:reconcile]');
 
-  const [contacts, journeys, issues, state] = await Promise.all([
+  await runFullReconcile(zohoClient, tenantConfig, deskClient);
+
+  const [contacts, journeys, tickets, issues, state] = await Promise.all([
     prisma.contact.count(),
     prisma.journey.count(),
+    prisma.ticket.count(),
     prisma.syncIssue.count(),
     prisma.syncState.findUnique({ where: { key: 'full_reconcile' } }),
   ]);
@@ -51,6 +55,7 @@ async function main(): Promise<void> {
   console.log('[sync:reconcile] final row counts:');
   console.log(`  Contact:    ${contacts}`);
   console.log(`  Journey:    ${journeys}`);
+  console.log(`  Ticket:     ${tickets}`);
   console.log(`  SyncIssue:  ${issues}`);
   console.log('[sync:reconcile] SyncState(full_reconcile):', JSON.stringify(state, null, 2));
   console.log(shuttingDown ? '[sync:reconcile] stopped early for graceful shutdown (checkpoint persisted, rerun to continue)' : '[sync:reconcile] full reconcile complete');

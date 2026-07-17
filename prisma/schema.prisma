@@ -151,6 +151,7 @@ model SyncState {
   lastRunStatus     String?   @map("last_run_status")
   contactsProcessed Int       @default(0) @map("contacts_processed")
   journeysProcessed Int       @default(0) @map("journeys_processed")
+  ticketsProcessed  Int       @default(0) @map("tickets_processed")
   issuesCount       Int       @default(0) @map("issues_count")
   updatedAt         DateTime  @updatedAt @map("updated_at")
 

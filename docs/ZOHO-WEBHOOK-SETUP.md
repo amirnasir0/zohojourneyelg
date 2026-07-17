@@ -28,7 +28,8 @@ See `TECH-DEBT.md` → "M5 Zoho-side webhook chain untested" for the standing no
 ---
 
 M5/M-journey-source add three endpoints that Zoho CRM calls directly on record changes, for near-instant
-updates instead of waiting up to 15 minutes for the next sync pass:
+updates instead of waiting up to 15 minutes for the next sync pass, plus a fourth (M8) that Zoho **Desk**
+calls on ticket changes:
 
 - `POST /webhooks/zoho/journey-updated` — fired when a Deal's stage changes. **Inactive for Elgris** — the
   journey source of truth moved from `Deals` to `Sales_Orders` (see TECH-DEBT.md "Journey source switched
@@ -38,11 +39,15 @@ updates instead of waiting up to 15 minutes for the next sync pass:
 - `POST /webhooks/zoho/salesorder-updated` — fired on **any** Sales_Orders field edit; the handler diffs
   the configured date fields + Stage against what's stored locally and no-ops cleanly when nothing relevant
   changed. This is Elgris's active journey-update webhook.
+- `POST /webhooks/zoho/ticket-updated` — fired on **any** Desk ticket field edit; same diff-before-write
+  no-op pattern as `salesorder-updated`. Configured in **Zoho Desk**, not CRM — see Rule 4 below, a
+  different automation UI entirely.
 
-All three are configured in Zoho CRM as **Workflow Rules** with a **Webhook** instant action. This doc walks
-through creating them, using Elgris's actual seed config (`seed/elgris.tenant-config.json`) as the worked
-example. If you're setting this up for a different tenant, substitute that tenant's own
-`zoho.journey_module` / field names / `webhooks.*` mapping throughout.
+Rules 1-3 are configured in Zoho CRM as **Workflow Rules** with a **Webhook** instant action; Rule 4 is
+configured in Zoho Desk's own automation UI. This doc walks through creating them, using Elgris's actual
+seed config (`seed/elgris.tenant-config.json`) as the worked example. If you're setting this up for a
+different tenant, substitute that tenant's own `zoho.journey_module` / field names / `webhooks.*` /
+`desk.*` mapping throughout.
 
 ## Prerequisites
 
@@ -172,6 +177,52 @@ The handler fetches the current Stage + all configured date fields from Zoho dir
 never needs to carry field values (which are dynamic tenant config, `journey.stages[].date_field`) — nothing
 to keep in sync by hand if a stage's date field is renamed or a new stage is added later.
 
+## Rule 4 — Ticket Updated (Zoho Desk)
+
+**This lives in Zoho Desk's own automation UI, not CRM's Workflow Rules** — a different admin section
+entirely (**Setup → Automation → Workflows**, under Desk, not CRM). Desk workflow actions can only be
+configured to fire when a field is added/edited on a **Ticket**; unlike Rule 3's CRM equivalent, Desk lets
+you pick specific fields to watch (**up to 5**), so trigger-on-any-edit isn't the only option here — but
+this doc uses any-edit anyway, for the same reason as Rule 3: the set of fields customers might care about
+(status, owner, co-owner, category, description) is exactly 5, right at the limit, and any-edit is simpler
+to keep correct as fields get added later.
+
+**Setup → Automation → Workflows → Create Workflow** (Desk section)
+
+| Field | Value |
+|---|---|
+| Module | `Tickets` |
+| Workflow name | `Ticket Updated → Webhook` |
+| When | **Ticket** → **Edit** |
+| Criteria | None needed — leave it firing on every ticket edit |
+
+### Instant Action → Webhook
+
+| Field | Value |
+|---|---|
+| Name | `ticket-updated` |
+| URL | `https://api.elgris.in/webhooks/zoho/ticket-updated?secret=<WEBHOOK_SECRET>` |
+| Method | `POST` |
+| **Body Type** | **`JSON`** (same warning as Rules 1-3) |
+| Body | `{ "record_id": "${Ticket.Ticket Id}" }` |
+
+Same minimal payload pattern as Rules 2/3 — just the ticket ID. The handler
+(`src/webhooks/ticket-updated.ts`) fetches the full ticket via `GET /tickets/{id}?include=assignee` and
+diffs it against the local mirror.
+
+**Two Desk-specific quirks worth knowing before debugging this rule:**
+
+- Desk's own web UI refers to tickets as **"Cases"** in its URLs (e.g. a ticket's `webUrl` looks like
+  `.../ShowHomePage.do#Cases/dv/<id>`), even though every API path, field name, and the `module=tickets`
+  param on the field-metadata endpoint all say **"tickets"**. This is a UI-only rename — don't go looking
+  for a `/cases` endpoint if you see "Cases" somewhere in the Desk admin UI or a webUrl.
+- The ticket-list endpoint (used by sync, not this webhook) does **not** support a `fields=` selector the
+  way CRM's v8 API does — it 422s with `Extra query parameter 'fields' is present`. Related fields are
+  embedded instead via `?include=contacts` (plural) or `?include=assignee` (singular) — each works only as
+  a single value, not comma-combined (`?include=assignee,contacts` 422s too). This webhook's single-ticket
+  fetch isn't affected (it always returns the full object), but it's the reason sync has to do a follow-up
+  `getTicket()` per changed ticket instead of getting everything from one list call.
+
 ## Testing a rule
 
 1. In the Workflow Rule list, most Zoho editions show a **Webhook Logs** or **Instant Actions → Logs**
@@ -183,8 +234,9 @@ to keep in sync by hand if a stage's date field is renamed or a new stage is add
    re-check the URL's `?secret=` value or the body's `secret` field against the deployment's
    `WEBHOOK_SECRET`. `400 {"error":"INVALID_PAYLOAD"}` almost always means the body type is form-encoded
    instead of JSON, or a key name doesn't match `webhooks.*` in the tenant config. `503` means the
-   deployment's `ZOHO_CLIENT_ID`/`ZOHO_CLIENT_SECRET`/`ZOHO_REFRESH_TOKEN` aren't configured — the webhook
-   still works for records already synced locally, but can't fetch not-yet-synced ones.
+   deployment's `ZOHO_CLIENT_ID`/`ZOHO_CLIENT_SECRET`/`ZOHO_REFRESH_TOKEN` (Rules 1-3) or
+   `ZOHO_DESK_CLIENT_ID`/`ZOHO_DESK_CLIENT_SECRET`/`ZOHO_DESK_REFRESH_TOKEN` (Rule 4) aren't configured —
+   the webhook still works for records already synced locally, but can't fetch not-yet-synced ones.
 
 ## Changing the field mapping
 
@@ -204,6 +256,9 @@ Workflow Rule body, update the matching tenant config section (no code changes n
   },
   "salesorder_updated": {
     "record_id_field": "record_id"
+  },
+  "ticket_updated": {
+    "record_id_field": "record_id"
   }
 }
 ```
@@ -214,7 +269,9 @@ webhook body — the server reads the payload using these names, not fixed ones.
 ## Secret rotation
 
 `WEBHOOK_SECRET` is a single shared value, not per-rule. To rotate it: update the deployment's environment
-variable, then update the `?secret=` query param (or body field) in **all active** Workflow Rules' webhook
-configs to match. There's a brief window where old and new rules could disagree if updated one at a time —
-for near-zero downtime, temporarily accept either value by deploying with the new secret, updating all
-Zoho rules, then removing the old value, rather than swapping all three atomically.
+variable, then update the `?secret=` query param (or body field) in **all active** Workflow Rules'/Desk
+Workflows' webhook configs to match — this includes Rule 4, even though it lives in a different Zoho
+product's admin UI; it's still gated by the same `WEBHOOK_SECRET`. There's a brief window where old and new
+rules could disagree if updated one at a time — for near-zero downtime, temporarily accept either value by
+deploying with the new secret, updating all Zoho rules, then removing the old value, rather than swapping
+them all atomically.

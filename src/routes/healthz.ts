@@ -54,6 +54,7 @@ export async function registerHealthzRoutes(app: FastifyInstance) {
             lastRunStatus: incremental.lastRunStatus,
             contactsProcessed: incremental.contactsProcessed,
             journeysProcessed: incremental.journeysProcessed,
+            ticketsProcessed: incremental.ticketsProcessed,
             issuesCount: incremental.issuesCount,
             stale: isStale(incremental.lastRunAt, INCREMENTAL_STALE_THRESHOLD_MS),
           }
@@ -64,6 +65,7 @@ export async function registerHealthzRoutes(app: FastifyInstance) {
             lastRunStatus: fullReconcile.lastRunStatus,
             contactsProcessed: fullReconcile.contactsProcessed,
             journeysProcessed: fullReconcile.journeysProcessed,
+            ticketsProcessed: fullReconcile.ticketsProcessed,
             stale: isStale(fullReconcile.lastRunAt, FULL_RECONCILE_STALE_THRESHOLD_MS),
           }
         : null,

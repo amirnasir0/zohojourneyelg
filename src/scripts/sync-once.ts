@@ -1,4 +1,5 @@
 import { loadTenantConfig } from '../config/loader.js';
+import { tryCreateDeskClient } from '../lib/desk-context.js';
 import { createZohoClient } from '../lib/zoho-client.js';
 import { prisma } from '../lib/prisma.js';
 import { runIncrementalSync } from '../sync/incremental.js';
@@ -45,11 +46,14 @@ async function main(): Promise<void> {
   }
   console.log('[sync:once] field mapping OK');
 
-  await runIncrementalSync(zohoClient, tenantConfig);
+  const deskClient = tryCreateDeskClient(tenantConfig, '[sync:once]');
 
-  const [contacts, journeys, issues, state] = await Promise.all([
+  await runIncrementalSync(zohoClient, tenantConfig, deskClient);
+
+  const [contacts, journeys, tickets, issues, state] = await Promise.all([
     prisma.contact.count(),
     prisma.journey.count(),
+    prisma.ticket.count(),
     prisma.syncIssue.count(),
     prisma.syncState.findUnique({ where: { key: 'incremental' } }),
   ]);
@@ -57,6 +61,7 @@ async function main(): Promise<void> {
   console.log('[sync:once] final row counts:');
   console.log(`  Contact:    ${contacts}`);
   console.log(`  Journey:    ${journeys}`);
+  console.log(`  Ticket:     ${tickets}`);
   console.log(`  SyncIssue:  ${issues}`);
   console.log('[sync:once] SyncState(incremental):', JSON.stringify(state, null, 2));
   console.log(shuttingDown ? '[sync:once] stopped early for graceful shutdown (checkpoint persisted, rerun to continue)' : '[sync:once] incremental sync complete');

@@ -3,6 +3,7 @@ import { verifyWebhookSecret } from '../lib/webhook-auth.js';
 import { handleContactUpdated } from '../webhooks/contact-updated.js';
 import { handleJourneyUpdated } from '../webhooks/journey-updated.js';
 import { handleSalesOrderUpdated } from '../webhooks/salesorder-updated.js';
+import { handleTicketUpdated } from '../webhooks/ticket-updated.js';
 
 export async function registerWebhookRoutes(app: FastifyInstance) {
   // Deals-Stage-driven — kept for tenants configured that way, but inactive
@@ -36,6 +37,18 @@ export async function registerWebhookRoutes(app: FastifyInstance) {
       return reply.code(result.status).send(result.body);
     } catch (err) {
       req.log.error({ err }, '[webhooks] salesorder-updated failed');
+      return reply.code(500).send({ error: 'INTERNAL_ERROR' });
+    }
+  });
+
+  // Fired from a Desk automation (Desk's own UI, separate from CRM Workflow
+  // Rules) on ticket field changes — see src/webhooks/ticket-updated.ts.
+  app.post('/webhooks/zoho/ticket-updated', { preHandler: verifyWebhookSecret }, async (req, reply) => {
+    try {
+      const result = await handleTicketUpdated(req.body, app.tenantConfig, app.deskClient);
+      return reply.code(result.status).send(result.body);
+    } catch (err) {
+      req.log.error({ err }, '[webhooks] ticket-updated failed');
       return reply.code(500).send({ error: 'INTERNAL_ERROR' });
     }
   });

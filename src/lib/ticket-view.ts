@@ -92,3 +92,54 @@ export function mapDeskTicketToFields(ticket: DeskTicket, tenantConfig: TenantCo
 export function isTicketClosed(ticket: Pick<DeskTicket, 'statusType'>): boolean {
   return ticket.statusType === 'Closed';
 }
+
+export interface TicketLike {
+  id: string;
+  ticketNumber: string;
+  subject: string;
+  description: string | null;
+  category: string | null;
+  status: string;
+  statusDisplay: string;
+  ownerName: string | null;
+  coOwnerName: string | null;
+  priority: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+  raw: unknown;
+}
+
+export interface TicketSummary {
+  id: string;
+  ticket_number: string;
+  subject: string;
+  description: string | null;
+  category: string | null;
+  status: string;
+  status_display: string;
+  owner_name: string | null;
+  co_owner_name: string | null;
+  priority: string | null;
+  created_at: Date;
+  updated_at: Date;
+  is_closed: boolean;
+}
+
+export function buildTicketSummary(ticket: TicketLike): TicketSummary {
+  const raw = ticket.raw as Pick<DeskTicket, 'statusType'> | null;
+  return {
+    id: ticket.id,
+    ticket_number: ticket.ticketNumber,
+    subject: ticket.subject,
+    description: ticket.description,
+    category: ticket.category,
+    status: ticket.status,
+    status_display: ticket.statusDisplay,
+    owner_name: ticket.ownerName,
+    co_owner_name: ticket.coOwnerName,
+    priority: ticket.priority,
+    created_at: ticket.createdAt,
+    updated_at: ticket.updatedAt,
+    is_closed: raw ? isTicketClosed(raw) : false,
+  };
+}

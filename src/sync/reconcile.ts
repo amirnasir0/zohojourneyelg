@@ -1,10 +1,12 @@
 import type { TenantConfig } from '../config/types.js';
 import { prisma } from '../lib/prisma.js';
 import type { ZohoClient } from '../lib/zoho-client.js';
+import type { ZohoDeskClient } from '../lib/zoho-desk-client.js';
 import { clearedCheckpoint, phaseTransitionCheckpoint, resolveRunStart } from './checkpoint.js';
 import { writeContactBatch } from './contact-batch.js';
 import { writeJourneyBatch } from './journey-batch.js';
 import { runPagedPhase } from './paged-phase.js';
+import { runTicketPhase } from './ticket-phase.js';
 
 const CONTACTS_MODULE = 'Contacts';
 const SYNC_KEY = 'full_reconcile';
@@ -13,7 +15,7 @@ function uniqueFields(fields: string[]): string[] {
   return [...new Set(fields)];
 }
 
-export async function runFullReconcile(zohoClient: ZohoClient, tenantConfig: TenantConfig): Promise<void> {
+export async function runFullReconcile(zohoClient: ZohoClient, tenantConfig: TenantConfig, deskClient: ZohoDeskClient | undefined): Promise<void> {
   console.log('[reconcile] starting run (full pull, no watermark)');
 
   const state = await prisma.syncState.upsert({
@@ -52,9 +54,11 @@ export async function runFullReconcile(zohoClient: ZohoClient, tenantConfig: Ten
 
     const zohoContactIds: string[] = [];
     const zohoJourneyIds: string[] = [];
+    const deskTicketIds: string[] = [];
 
     let contactsDone = 0;
     let journeysDone = 0;
+    let ticketsDone = 0;
 
     if (runStart.phase === 'contacts') {
       console.log('[reconcile] fetching Contacts from Zoho...');
@@ -80,30 +84,53 @@ export async function runFullReconcile(zohoClient: ZohoClient, tenantConfig: Ten
       }
     }
 
-    console.log(`[reconcile] fetching ${tenantConfig.zoho.journey_module} from Zoho...`);
-    const journeyResult = await runPagedPhase({
-      syncKey: SYNC_KEY,
-      zohoClient,
-      phase: 'journeys',
-      module: tenantConfig.zoho.journey_module,
-      fields: journeyFields,
-      sinceIso: undefined,
-      runStartedAt,
-      startPageToken: runStart.phase === 'journeys' ? runStart.pageToken : undefined,
-      startPagesDone: runStart.phase === 'journeys' ? runStart.pagesDone : 0,
-      nextPhase: null,
-      writeBatch: (records, extraOps) => writeJourneyBatch(records, tenantConfig, extraOps),
-      onPageRecords: (records) => zohoJourneyIds.push(...records.map((r) => String(r.id))),
-      logPrefix: '[reconcile]',
-    });
-    journeysDone = journeyResult.written;
-    if (journeyResult.stoppedForShutdown) {
-      console.log('[reconcile] exiting cleanly after shutdown signal');
-      return;
+    if (runStart.phase === 'contacts' || runStart.phase === 'journeys') {
+      console.log(`[reconcile] fetching ${tenantConfig.zoho.journey_module} from Zoho...`);
+      const journeyResult = await runPagedPhase({
+        syncKey: SYNC_KEY,
+        zohoClient,
+        phase: 'journeys',
+        module: tenantConfig.zoho.journey_module,
+        fields: journeyFields,
+        sinceIso: undefined,
+        runStartedAt,
+        startPageToken: runStart.phase === 'journeys' ? runStart.pageToken : undefined,
+        startPagesDone: runStart.phase === 'journeys' ? runStart.pagesDone : 0,
+        nextPhase: deskClient ? 'tickets' : null,
+        writeBatch: (records, extraOps) => writeJourneyBatch(records, tenantConfig, extraOps),
+        onPageRecords: (records) => zohoJourneyIds.push(...records.map((r) => String(r.id))),
+        logPrefix: '[reconcile]',
+      });
+      journeysDone = journeyResult.written;
+      if (journeyResult.stoppedForShutdown) {
+        console.log('[reconcile] exiting cleanly after shutdown signal');
+        return;
+      }
+    }
+
+    if (deskClient) {
+      console.log('[reconcile] fetching Tickets from Zoho Desk...');
+      const ticketResult = await runTicketPhase({
+        syncKey: SYNC_KEY,
+        deskClient,
+        tenantConfig,
+        runStartedAt,
+        startPageToken: runStart.phase === 'tickets' ? runStart.pageToken : undefined,
+        startPagesDone: runStart.phase === 'tickets' ? runStart.pagesDone : 0,
+        onPageRecords: (ids) => deskTicketIds.push(...ids),
+        logPrefix: '[reconcile]',
+      });
+      ticketsDone = ticketResult.written;
+      if (ticketResult.stoppedForShutdown) {
+        console.log('[reconcile] exiting cleanly after shutdown signal');
+        return;
+      }
+    } else {
+      console.log('[reconcile] Zoho Desk not configured — skipping tickets phase');
     }
 
     // Cleanup (deleting local rows absent from Zoho) only runs when this
-    // invocation executed BOTH phases start-to-finish without a resume —
+    // invocation executed every phase start-to-finish without a resume —
     // a resumed run's onPageRecords only saw the pages fetched THIS
     // invocation, so its ID list would be missing every page committed
     // before the interruption, which would make a deleteMany wrongly
@@ -125,6 +152,18 @@ export async function runFullReconcile(zohoClient: ZohoClient, tenantConfig: Ten
       } else {
         console.error('[reconcile] Zoho returned zero journey records, skipping journey cleanup to avoid wiping local data');
       }
+
+      // Only cleans up when Desk was actually configured for this run — with
+      // deskClient undefined, deskTicketIds is always empty, and running the
+      // same empty-response guard would wipe every local ticket row.
+      if (deskClient) {
+        if (deskTicketIds.length > 0) {
+          const { count } = await prisma.ticket.deleteMany({ where: { deskTicketId: { notIn: deskTicketIds } } });
+          console.log(`[reconcile] ticket cleanup: removed ${count} local row(s) not present in Zoho Desk`);
+        } else {
+          console.error('[reconcile] Zoho Desk returned zero tickets, skipping ticket cleanup to avoid wiping local data');
+        }
+      }
     } else {
       console.log('[reconcile] run included a resume — skipping cleanup this pass (deferred to next uninterrupted full reconcile) to avoid deleting rows fetched before the interruption');
     }
@@ -136,11 +175,12 @@ export async function runFullReconcile(zohoClient: ZohoClient, tenantConfig: Ten
         lastRunStatus: 'success',
         contactsProcessed: contactsDone,
         journeysProcessed: journeysDone,
+        ticketsProcessed: ticketsDone,
         ...clearedCheckpoint(),
       },
     });
 
-    console.log(`[reconcile] run complete: contacts=${contactsDone} journeys=${journeysDone}`);
+    console.log(`[reconcile] run complete: contacts=${contactsDone} journeys=${journeysDone} tickets=${ticketsDone}`);
   } catch (err) {
     console.error('[reconcile] run failed:', err);
     // Checkpoint left untouched — see incremental.ts for the same reasoning.

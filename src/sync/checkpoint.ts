@@ -1,4 +1,4 @@
-export type SyncPhase = 'contacts' | 'journeys';
+export type SyncPhase = 'contacts' | 'journeys' | 'tickets';
 
 export interface CheckpointState {
   checkpointPhase: string | null;
@@ -30,7 +30,7 @@ export interface FreshRunStart {
 export type RunStart = ResumeRunStart | FreshRunStart;
 
 function isSyncPhase(value: string): value is SyncPhase {
-  return value === 'contacts' || value === 'journeys';
+  return value === 'contacts' || value === 'journeys' || value === 'tickets';
 }
 
 /**

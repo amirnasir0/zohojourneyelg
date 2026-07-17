@@ -16,6 +16,11 @@ export function requestShutdown(): void {
 export function resetShutdownFlag(): void {
   shutdownRequested = false;
 }
+// Shared with ticket-phase.ts, whose Desk pagination shape doesn't fit
+// runPagedPhase below — same process-global flag, single source of truth.
+export function isShutdownRequested(): boolean {
+  return shutdownRequested;
+}
 
 export interface PagedPhaseArgs {
   syncKey: string;

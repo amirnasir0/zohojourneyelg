@@ -12,6 +12,7 @@ import { registerAuthRoutes } from './routes/auth.js';
 import { registerConfigRoutes } from './routes/config.js';
 import { registerHealthzRoutes } from './routes/healthz.js';
 import { registerMeRoutes } from './routes/me.js';
+import { registerTicketRoutes } from './routes/tickets.js';
 import { registerWebhookRoutes } from './routes/webhooks.js';
 import { startSyncScheduler } from './sync/scheduler.js';
 
@@ -102,6 +103,7 @@ await registerHealthzRoutes(app);
 await registerAuthRoutes(app);
 await registerConfigRoutes(app);
 await registerMeRoutes(app);
+await registerTicketRoutes(app);
 await registerWebhookRoutes(app);
 
 const stopScheduler = startSyncScheduler(app.tenantConfig);
