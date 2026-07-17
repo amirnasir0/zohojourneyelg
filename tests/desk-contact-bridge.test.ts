@@ -8,7 +8,7 @@ vi.mock('../src/lib/prisma.js', () => ({
 }));
 
 const { prisma } = await import('../src/lib/prisma.js');
-const { resolveDeskContactId } = await import('../src/lib/desk-contact-bridge.js');
+const { resolveDeskContactId, createTicketForContact } = await import('../src/lib/desk-contact-bridge.js');
 
 const deskClient = {
   getDepartments: vi.fn(),
@@ -114,5 +114,67 @@ describe('resolveDeskContactId', () => {
     await resolveDeskContactId(deskClient as never, contact);
 
     expect(deskClient.createContact).toHaveBeenCalledWith(expect.objectContaining({ firstName: null, lastName: 'Customer' }));
+  });
+});
+
+describe('createTicketForContact', () => {
+  const ticketInput = { departmentId: 'dept1', subject: 'Panels not working', category: 'Defects' };
+
+  it('creates the ticket directly using a cached deskContactId, no retry', async () => {
+    const contact = makeContact({ deskContactId: 'dc-cached' });
+    deskClient.createTicket.mockResolvedValue({ id: 't1' });
+
+    const result = await createTicketForContact(deskClient as never, contact, ticketInput);
+
+    expect(result).toEqual({ id: 't1' });
+    expect(deskClient.createTicket).toHaveBeenCalledTimes(1);
+    expect(deskClient.createTicket).toHaveBeenCalledWith({ ...ticketInput, contactId: 'dc-cached' });
+    expect(prisma.contact.update).not.toHaveBeenCalled();
+  });
+
+  it('resolves fresh (no retry needed) when there was nothing cached to begin with', async () => {
+    const contact = makeContact({ deskContactId: null });
+    deskClient.findContactByPhoneOrEmail.mockResolvedValue({ id: 'dc-fresh' });
+    deskClient.createTicket.mockResolvedValue({ id: 't1' });
+
+    const result = await createTicketForContact(deskClient as never, contact, ticketInput);
+
+    expect(result).toEqual({ id: 't1' });
+    expect(deskClient.createTicket).toHaveBeenCalledTimes(1);
+  });
+
+  it('on a 404 from a cached deskContactId, clears the cache, re-resolves, and retries once', async () => {
+    const contact = makeContact({ deskContactId: 'dc-stale' });
+    const notFoundErr = new Error('Zoho Desk createTicket failed: status=404 body={"errorCode":"CONTACT_NOT_FOUND"}');
+    deskClient.createTicket.mockRejectedValueOnce(notFoundErr).mockResolvedValueOnce({ id: 't1' });
+    deskClient.findContactByPhoneOrEmail.mockResolvedValue({ id: 'dc-fresh' });
+
+    const result = await createTicketForContact(deskClient as never, contact, ticketInput);
+
+    expect(result).toEqual({ id: 't1' });
+    expect(deskClient.createTicket).toHaveBeenCalledTimes(2);
+    expect(deskClient.createTicket).toHaveBeenNthCalledWith(1, { ...ticketInput, contactId: 'dc-stale' });
+    expect(prisma.contact.update).toHaveBeenCalledWith({ where: { id: 'local-1' }, data: { deskContactId: null } });
+    expect(deskClient.createTicket).toHaveBeenNthCalledWith(2, { ...ticketInput, contactId: 'dc-fresh' });
+  });
+
+  it('does not retry a non-404 error even with a cached deskContactId', async () => {
+    const contact = makeContact({ deskContactId: 'dc-cached' });
+    const validationErr = new Error('Zoho Desk createTicket failed: status=400 body={"errorCode":"INVALID_DATA"}');
+    deskClient.createTicket.mockRejectedValue(validationErr);
+
+    await expect(createTicketForContact(deskClient as never, contact, ticketInput)).rejects.toThrow(validationErr);
+    expect(deskClient.createTicket).toHaveBeenCalledTimes(1);
+    expect(prisma.contact.update).not.toHaveBeenCalled();
+  });
+
+  it('does not retry a 404 when nothing was cached to begin with (a freshly-resolved ID failing is a real error)', async () => {
+    const contact = makeContact({ deskContactId: null });
+    deskClient.findContactByPhoneOrEmail.mockResolvedValue({ id: 'dc-fresh' });
+    const notFoundErr = new Error('Zoho Desk createTicket failed: status=404 body={}');
+    deskClient.createTicket.mockRejectedValue(notFoundErr);
+
+    await expect(createTicketForContact(deskClient as never, contact, ticketInput)).rejects.toThrow(notFoundErr);
+    expect(deskClient.createTicket).toHaveBeenCalledTimes(1);
   });
 });

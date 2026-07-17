@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { requireAuth } from '../lib/auth-middleware.js';
-import { resolveDeskContactId } from '../lib/desk-contact-bridge.js';
+import { createTicketForContact } from '../lib/desk-contact-bridge.js';
 import { sendWithEtag } from '../lib/http-cache.js';
 import { prisma } from '../lib/prisma.js';
 import { getCachedTickets, invalidateTicketsCache, setCachedTickets } from '../lib/tickets-cache.js';
@@ -58,11 +58,8 @@ export async function registerTicketRoutes(app: FastifyInstance) {
       }
     }
 
-    const deskContactId = await resolveDeskContactId(app.deskClient, contact);
-
-    const created = await app.deskClient.createTicket({
+    const created = await createTicketForContact(app.deskClient, contact, {
       departmentId: app.deskContext.departmentId,
-      contactId: deskContactId,
       subject,
       category,
       ...(description ? { description } : {}),

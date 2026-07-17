@@ -1,6 +1,6 @@
 import type { Contact } from '@prisma/client';
 import { prisma } from './prisma.js';
-import type { ZohoDeskClient } from './zoho-desk-client.js';
+import type { CreateTicketInput, DeskTicket, ZohoDeskClient } from './zoho-desk-client.js';
 
 /**
  * Resolves a local Contact -> Desk contact ID, caching the result on
@@ -48,4 +48,44 @@ export async function resolveDeskContactId(deskClient: ZohoDeskClient, contact: 
 
   await prisma.contact.update({ where: { id: contact.id }, data: { deskContactId: created.id } });
   return created.id;
+}
+
+function is404(err: unknown): boolean {
+  // Matches zoho-desk-client.ts's generic "Zoho Desk createTicket failed:
+  // status=<code> body=..." error message shape — narrow on purpose, so
+  // this only fires for "the referenced contact genuinely doesn't exist
+  // anymore" (a real 404), not for validation errors, rate limits, or
+  // network failures, none of which a re-resolve would fix.
+  return err instanceof Error && /status=404\b/.test(err.message);
+}
+
+/**
+ * Creates a ticket for a contact, with one layer of self-healing: if the
+ * cached Contact.deskContactId turns out to be stale (the Desk contact was
+ * deleted/purged out from under us — exactly the class of drift a manual
+ * dedup cleanup can cause, see the duplicate-contact incident this was
+ * added after), the create call 404s, so this clears the cache, re-resolves
+ * fresh via resolveDeskContactId, and retries exactly once. A fresh
+ * resolution (contact.deskContactId was already null) skips this entirely —
+ * there's nothing stale to recover from.
+ */
+export async function createTicketForContact(
+  deskClient: ZohoDeskClient,
+  contact: Contact,
+  input: Omit<CreateTicketInput, 'contactId'>,
+): Promise<DeskTicket> {
+  const wasCached = contact.deskContactId !== null;
+  const deskContactId = await resolveDeskContactId(deskClient, contact);
+
+  try {
+    return await deskClient.createTicket({ ...input, contactId: deskContactId });
+  } catch (err) {
+    if (!wasCached || !is404(err)) {
+      throw err;
+    }
+    console.error(`[desk-contact-bridge] cached deskContactId ${deskContactId} for contact ${contact.id} 404'd on ticket creation — clearing cache and re-resolving`);
+    await prisma.contact.update({ where: { id: contact.id }, data: { deskContactId: null } });
+    const freshDeskContactId = await resolveDeskContactId(deskClient, { ...contact, deskContactId: null });
+    return deskClient.createTicket({ ...input, contactId: freshDeskContactId });
+  }
 }

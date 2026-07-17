@@ -19,12 +19,12 @@ vi.mock('../src/lib/jwt.js', () => ({
 }));
 
 vi.mock('../src/lib/desk-contact-bridge.js', () => ({
-  resolveDeskContactId: vi.fn(),
+  createTicketForContact: vi.fn(),
 }));
 
 const { prisma } = await import('../src/lib/prisma.js');
 const { verifySessionToken } = await import('../src/lib/jwt.js');
-const { resolveDeskContactId } = await import('../src/lib/desk-contact-bridge.js');
+const { createTicketForContact } = await import('../src/lib/desk-contact-bridge.js');
 const { registerTicketRoutes } = await import('../src/routes/tickets.js');
 
 const tenantConfig: TenantConfig = {
@@ -182,8 +182,7 @@ describe('POST /me/tickets', () => {
     mockAuthAs('c1');
     vi.mocked(prisma.contact.findUnique).mockResolvedValue({ id: 'c1', deskContactId: null } as never);
     vi.mocked(prisma.ticket.findMany).mockResolvedValue([]);
-    vi.mocked(resolveDeskContactId).mockResolvedValue('dc1');
-    deskClient.createTicket.mockResolvedValue({ id: 't1' });
+    vi.mocked(createTicketForContact).mockResolvedValue({ id: 't1' } as never);
     deskClient.getTicket.mockResolvedValue({
       id: 't1',
       ticketNumber: '1001',
@@ -213,8 +212,10 @@ describe('POST /me/tickets', () => {
 
     expect(res.statusCode).toBe(201);
     expect(res.json().ticket).toMatchObject({ id: 'ticket-1', subject: 'Panels not working', category: 'Defects' });
-    expect(deskClient.createTicket).toHaveBeenCalledWith(
-      expect.objectContaining({ departmentId: 'dept1', contactId: 'dc1', subject: 'Panels not working', category: 'Defects' }),
+    expect(createTicketForContact).toHaveBeenCalledWith(
+      deskClient,
+      expect.objectContaining({ id: 'c1' }),
+      expect.objectContaining({ departmentId: 'dept1', subject: 'Panels not working', category: 'Defects' }),
     );
 
     const cached = await redisMock.get('cache:me:tickets:c1');
@@ -236,15 +237,14 @@ describe('POST /me/tickets', () => {
 
     expect(res.statusCode).toBe(409);
     expect(res.json().existing_ticket).toMatchObject({ id: 'ticket-1' });
-    expect(deskClient.createTicket).not.toHaveBeenCalled();
+    expect(createTicketForContact).not.toHaveBeenCalled();
   });
 
   it('bypasses the duplicate guard when force:true is set', async () => {
     mockAuthAs('c1');
     vi.mocked(prisma.contact.findUnique).mockResolvedValue({ id: 'c1', deskContactId: 'dc1' } as never);
     vi.mocked(prisma.ticket.findMany).mockResolvedValue([ticketRow] as never);
-    vi.mocked(resolveDeskContactId).mockResolvedValue('dc1');
-    deskClient.createTicket.mockResolvedValue({ id: 't2' });
+    vi.mocked(createTicketForContact).mockResolvedValue({ id: 't2' } as never);
     deskClient.getTicket.mockResolvedValue({
       id: 't2',
       ticketNumber: '1002',
@@ -272,7 +272,7 @@ describe('POST /me/tickets', () => {
     });
 
     expect(res.statusCode).toBe(201);
-    expect(deskClient.createTicket).toHaveBeenCalled();
+    expect(createTicketForContact).toHaveBeenCalled();
   });
 });
 
