@@ -51,27 +51,27 @@ describe('resolveDeskContactId', () => {
     expect(deskClient.createContact).not.toHaveBeenCalled();
   });
 
-  it('resolves via CRM contact reference first and caches the result', async () => {
+  it('resolves via phone/email search first (the fast, search-backed path) and caches the result', async () => {
     const contact = makeContact();
-    deskClient.findContactByCrmId.mockResolvedValue({ id: 'dc-by-crm' });
-
-    const result = await resolveDeskContactId(deskClient as never, contact);
-
-    expect(result).toBe('dc-by-crm');
-    expect(deskClient.findContactByCrmId).toHaveBeenCalledWith('zc1');
-    expect(deskClient.findContactByPhoneOrEmail).not.toHaveBeenCalled();
-    expect(prisma.contact.update).toHaveBeenCalledWith({ where: { id: 'local-1' }, data: { deskContactId: 'dc-by-crm' } });
-  });
-
-  it('falls back to phone/email search when the CRM reference does not resolve', async () => {
-    const contact = makeContact();
-    deskClient.findContactByCrmId.mockResolvedValue(null);
     deskClient.findContactByPhoneOrEmail.mockResolvedValue({ id: 'dc-by-phone' });
 
     const result = await resolveDeskContactId(deskClient as never, contact);
 
     expect(result).toBe('dc-by-phone');
     expect(deskClient.findContactByPhoneOrEmail).toHaveBeenCalledWith('+919999999999', 'uzeb@example.com');
+    expect(deskClient.findContactByCrmId).not.toHaveBeenCalled();
+    expect(prisma.contact.update).toHaveBeenCalledWith({ where: { id: 'local-1' }, data: { deskContactId: 'dc-by-phone' } });
+  });
+
+  it('falls back to the CRM-reference scan when phone/email search finds nothing', async () => {
+    const contact = makeContact();
+    deskClient.findContactByPhoneOrEmail.mockResolvedValue(null);
+    deskClient.findContactByCrmId.mockResolvedValue({ id: 'dc-by-crm' });
+
+    const result = await resolveDeskContactId(deskClient as never, contact);
+
+    expect(result).toBe('dc-by-crm');
+    expect(deskClient.findContactByCrmId).toHaveBeenCalledWith('zc1');
     expect(deskClient.createContact).not.toHaveBeenCalled();
   });
 

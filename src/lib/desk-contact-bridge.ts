@@ -6,29 +6,32 @@ import type { ZohoDeskClient } from './zoho-desk-client.js';
  * Resolves a local Contact -> Desk contact ID, caching the result on
  * Contact.deskContactId after the first successful resolution:
  * 1. Already resolved — used verbatim, no Desk call.
- * 2. Search Desk by CRM contact reference, then by phone/email (see
- *    zoho-desk-client's scanContacts — a full-list client-side scan today,
- *    since Desk.search.READ scope isn't confirmed granted; swap in a real
- *    search call once it is, this function's contract doesn't change).
- * 3. Not found anywhere — create a new Desk contact bridged via
- *    zohoCRMContact so future lookups (by us or Desk's own CRM sync) find it
- *    by step 2 immediately.
+ * 2. Search Desk by phone/email first — Desk.search.READ is confirmed
+ *    granted and /contacts/search confirmed working live (17 Jul), so this
+ *    is fast; falls back to a full-list scan internally only on a search
+ *    error (see zoho-desk-client's findContactByPhoneOrEmail).
+ * 3. Fall back to a CRM-contact-reference scan — Desk has no dedicated
+ *    search parameter for the zohoCRMContact back-reference, so this is
+ *    always a full-list scan; kept as the last resort specifically because
+ *    it's the slow path, not the first check.
+ * 4. Not found anywhere — create a new Desk contact bridged via
+ *    zohoCRMContact so future lookups find it by step 2 immediately.
  */
 export async function resolveDeskContactId(deskClient: ZohoDeskClient, contact: Contact): Promise<string> {
   if (contact.deskContactId) {
     return contact.deskContactId;
   }
 
-  const byCrmId = await deskClient.findContactByCrmId(contact.zohoContactId);
-  if (byCrmId) {
-    await prisma.contact.update({ where: { id: contact.id }, data: { deskContactId: byCrmId.id } });
-    return byCrmId.id;
-  }
-
   const byPhoneOrEmail = await deskClient.findContactByPhoneOrEmail(contact.mobileE164, contact.email);
   if (byPhoneOrEmail) {
     await prisma.contact.update({ where: { id: contact.id }, data: { deskContactId: byPhoneOrEmail.id } });
     return byPhoneOrEmail.id;
+  }
+
+  const byCrmId = await deskClient.findContactByCrmId(contact.zohoContactId);
+  if (byCrmId) {
+    await prisma.contact.update({ where: { id: contact.id }, data: { deskContactId: byCrmId.id } });
+    return byCrmId.id;
   }
 
   const nameParts = (contact.fullName ?? 'Customer').trim().split(/\s+/);

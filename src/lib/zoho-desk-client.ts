@@ -155,10 +155,9 @@ const PAGE_SIZE = 100;
 const MAX_429_RETRIES = 3;
 const TOKEN_EXPIRY_SAFETY_MS = 60_000;
 const REQUEST_TIMEOUT_MS = 30_000;
-// Full-contact-list scan cap for the bridge's search fallback — protects
-// against pathological pagination if search scope (Desk.search.READ) still
-// isn't granted and the contact base is large. Revisit once dedicated
-// search is confirmed working (see findContactByCrmId/findContactByPhoneOrEmail).
+// Full-contact-list scan cap — protects against pathological pagination on
+// the CRM-id lookup (still scan-only, no dedicated search param) and on the
+// phone/email search's error fallback, if the contact base is large.
 const MAX_CONTACT_SCAN_PAGES = 200;
 
 function requireEnv(name: string): string {
@@ -342,13 +341,12 @@ class ZohoDeskApiClient implements ZohoDeskClient {
   }
 
   /**
-   * Dedicated /contacts/search and the generic /search endpoint both
-   * currently reject with SCOPE_MISMATCH / return empty (Desk.search.READ
-   * not yet granted — confirmed live 16 Jul) and /contacts doesn't accept
-   * email/searchStr as filter query params (422s). Until that scope lands,
-   * this walks the full contact list client-side. Works correctly today,
-   * just not efficiently at scale — swap the body for a real search call
-   * once Desk.search.READ is confirmed on the token.
+   * Full-contact-list scan — the only mechanism available before
+   * Desk.search.READ was granted (confirmed blocked 16-17 Jul: dedicated
+   * /contacts/search 403'd SCOPE_MISMATCH, /contacts doesn't accept
+   * email/searchStr as filter params). Now used only as findContactByCrmId's
+   * implementation (no dedicated search param exists for the CRM
+   * back-reference) and as findContactByPhoneOrEmail's error fallback.
    */
   private async scanContacts(predicate: (c: DeskContact) => boolean): Promise<DeskContact | null> {
     let from = 1;
@@ -372,7 +370,37 @@ class ZohoDeskApiClient implements ZohoDeskClient {
     return null;
   }
 
+  private async searchContacts(params: Record<string, string>): Promise<DeskContact[]> {
+    const query = new URLSearchParams(params);
+    const res = await this.request(`/contacts/search?${query.toString()}`);
+    if (res.status === 204) {
+      return [];
+    }
+    if (!res.ok) {
+      const body = await res.text().catch(() => '<unreadable body>');
+      throw new Error(`Zoho Desk contact search failed: status=${res.status} body=${body}`);
+    }
+    const data = (await res.json()) as { data?: DeskContact[] };
+    return data.data ?? [];
+  }
+
+  // Confirmed live 17 Jul: real production data has MORE THAN ONE Desk
+  // contact sharing the same email — a prior manual entry alongside one our
+  // own bridge created earlier (before search was available, the scan
+  // missed the existing one). Prefer whichever candidate already carries a
+  // zohoCRMContact link — that's the canonical, previously-bridged one —
+  // over an unlinked duplicate.
+  private pickBestContactMatch(candidates: DeskContact[]): DeskContact | null {
+    if (candidates.length === 0) {
+      return null;
+    }
+    return candidates.find((c) => c.zohoCRMContact) ?? candidates[0]!;
+  }
+
   async findContactByCrmId(crmContactId: string): Promise<DeskContact | null> {
+    // No dedicated search parameter for the CRM back-reference — Desk's
+    // /contacts/search only supports email/phone/name-shaped queries
+    // (confirmed live) — so this stays scan-based.
     return this.scanContacts((c) => c.zohoCRMContact?.id === crmContactId);
   }
 
@@ -380,7 +408,20 @@ class ZohoDeskApiClient implements ZohoDeskClient {
     if (!phone && !email) {
       return null;
     }
-    return this.scanContacts((c) => (phone !== null && (c.phone === phone || c.mobile === phone)) || (email !== null && c.email === email));
+
+    try {
+      const results: DeskContact[] = [];
+      if (email) {
+        results.push(...(await this.searchContacts({ email })));
+      }
+      if (phone) {
+        results.push(...(await this.searchContacts({ phone })));
+      }
+      return this.pickBestContactMatch(results.filter((c) => (phone !== null && (c.phone === phone || c.mobile === phone)) || (email !== null && c.email === email)));
+    } catch (err) {
+      console.error('[zoho-desk-client] contact search failed, falling back to full-list scan', err);
+      return this.scanContacts((c) => (phone !== null && (c.phone === phone || c.mobile === phone)) || (email !== null && c.email === email));
+    }
   }
 
   async createContact(input: CreateContactInput): Promise<DeskContact> {
