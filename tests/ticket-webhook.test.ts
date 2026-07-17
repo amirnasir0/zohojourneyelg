@@ -96,6 +96,7 @@ function makeTicket(overrides: Partial<DeskTicket> = {}): DeskTicket {
     statusType: 'Open',
     category: 'Defects',
     priority: null,
+    closedTime: null,
     departmentId: 'dept1',
     contactId: 'dc1',
     assigneeId: null,
@@ -119,6 +120,7 @@ const existingTicketRow = {
   ownerName: null,
   coOwnerName: null,
   priority: null,
+  closedAt: null,
   createdAt: new Date('2026-07-17T09:41:54.000Z'),
   updatedAt: new Date('2026-07-17T09:42:05.000Z'),
   syncedAt: new Date('2026-07-17T09:42:05.000Z'),
@@ -234,5 +236,38 @@ describe('ticket-updated: existing ticket diffing', () => {
 
     const cached = await redisMock.get('cache:me:tickets:c1');
     expect(cached).toBeNull();
+  });
+
+  it('sets closedAt from Desk\'s closedTime when the ticket closes', async () => {
+    deskClient.getTicket.mockResolvedValue(makeTicket({ status: 'Closed', statusType: 'Closed', closedTime: '2026-07-17T13:54:20.000Z' }));
+    vi.mocked(prisma.ticket.findUnique).mockResolvedValue(existingTicketRow as never);
+    vi.mocked(prisma.ticket.update).mockResolvedValue({} as never);
+
+    const app = await buildApp();
+    const res = await postWebhook({ record_id: 't1' })(app);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ success: true, changed: true });
+    expect(prisma.ticket.update).toHaveBeenCalledWith({
+      where: { id: 'ticket-row-1' },
+      data: expect.objectContaining({ closedAt: new Date('2026-07-17T13:54:20.000Z') }),
+    });
+  });
+
+  it('clears closedAt back to null when a closed ticket is reopened', async () => {
+    const closedRow = { ...existingTicketRow, status: 'Closed', statusDisplay: 'Resolved', closedAt: new Date('2026-07-17T13:54:20.000Z') };
+    deskClient.getTicket.mockResolvedValue(makeTicket({ status: 'Open', statusType: 'Open', closedTime: null }));
+    vi.mocked(prisma.ticket.findUnique).mockResolvedValue(closedRow as never);
+    vi.mocked(prisma.ticket.update).mockResolvedValue({} as never);
+
+    const app = await buildApp();
+    const res = await postWebhook({ record_id: 't1' })(app);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ success: true, changed: true });
+    expect(prisma.ticket.update).toHaveBeenCalledWith({
+      where: { id: 'ticket-row-1' },
+      data: expect.objectContaining({ status: 'Open', closedAt: null }),
+    });
   });
 });

@@ -46,6 +46,7 @@ export interface TicketFields {
   ownerName: string | null;
   coOwnerName: string | null;
   priority: string | null;
+  closedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
   syncedAt: Date;
@@ -78,6 +79,7 @@ export function mapDeskTicketToFields(ticket: DeskTicket, tenantConfig: TenantCo
     ownerName,
     coOwnerName,
     priority: normalizeValue(ticket.priority),
+    closedAt: ticket.closedTime ? new Date(ticket.closedTime) : null,
     createdAt: new Date(ticket.createdTime),
     updatedAt: new Date(ticket.modifiedTime),
     syncedAt: new Date(),
@@ -104,6 +106,7 @@ export interface TicketLike {
   ownerName: string | null;
   coOwnerName: string | null;
   priority: string | null;
+  closedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
   raw: unknown;
@@ -120,6 +123,7 @@ export interface TicketSummary {
   owner_name: string | null;
   co_owner_name: string | null;
   priority: string | null;
+  closed_at: Date | null;
   created_at: Date;
   updated_at: Date;
   is_closed: boolean;
@@ -138,6 +142,7 @@ export function buildTicketSummary(ticket: TicketLike): TicketSummary {
     owner_name: ticket.ownerName,
     co_owner_name: ticket.coOwnerName,
     priority: ticket.priority,
+    closed_at: ticket.closedAt,
     created_at: ticket.createdAt,
     updated_at: ticket.updatedAt,
     is_closed: raw ? isTicketClosed(raw) : false,

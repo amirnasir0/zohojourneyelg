@@ -66,6 +66,7 @@ describe('GET /config ETag/304 behavior', () => {
     expect(res.headers.etag).toBeTruthy();
     expect(res.headers['cache-control']).toBe('public, max-age=300');
     expect(res.json().tenant.display_name).toBe('Elgris Solar');
+    expect(res.json().desk.response_time_copy).toBe('Our team typically responds within 24 hours.');
   });
 
   it('returns 304 with an empty body when If-None-Match matches the current ETag', async () => {

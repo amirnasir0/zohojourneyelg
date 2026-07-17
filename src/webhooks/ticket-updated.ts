@@ -15,6 +15,7 @@ interface ComparableTicketFields {
   ownerName: string | null;
   coOwnerName: string | null;
   priority: string | null;
+  closedAt: Date | null;
 }
 
 function fieldsChanged(existing: ComparableTicketFields, incoming: ComparableTicketFields): boolean {
@@ -26,7 +27,8 @@ function fieldsChanged(existing: ComparableTicketFields, incoming: ComparableTic
     existing.statusDisplay !== incoming.statusDisplay ||
     existing.ownerName !== incoming.ownerName ||
     existing.coOwnerName !== incoming.coOwnerName ||
-    existing.priority !== incoming.priority
+    existing.priority !== incoming.priority ||
+    existing.closedAt?.getTime() !== incoming.closedAt?.getTime()
   );
 }
 
@@ -84,6 +86,7 @@ export async function handleTicketUpdated(body: unknown, tenantConfig: TenantCon
         ownerName: incoming.ownerName,
         coOwnerName: incoming.coOwnerName,
         priority: incoming.priority,
+        closedAt: incoming.closedAt,
         createdAt: incoming.createdAt,
         updatedAt: incoming.updatedAt,
         syncedAt: incoming.syncedAt,
@@ -110,6 +113,7 @@ export async function handleTicketUpdated(body: unknown, tenantConfig: TenantCon
       ownerName: incoming.ownerName,
       coOwnerName: incoming.coOwnerName,
       priority: incoming.priority,
+      closedAt: incoming.closedAt,
       updatedAt: incoming.updatedAt,
       syncedAt: incoming.syncedAt,
       raw: incoming.raw as unknown as Prisma.InputJsonValue,

@@ -93,6 +93,11 @@ model Ticket {
   ownerName     String?   @map("owner_name")
   coOwnerName   String?   @map("co_owner_name")
   priority      String?
+  // Mirrors Desk's own closedTime (confirmed live: ISO timestamp set the
+  // moment status flips to Closed, cleared back to null on reopen) — not
+  // derived/computed locally, so a reopen-then-reclose is reflected exactly
+  // as Desk reports it, no local state to drift.
+  closedAt      DateTime? @map("closed_at")
   createdAt     DateTime  @map("created_at")
   updatedAt     DateTime  @map("updated_at")
   // Local write timestamp, distinct from createdAt/updatedAt (which mirror

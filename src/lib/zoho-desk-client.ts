@@ -75,6 +75,12 @@ export interface DeskTicket {
   departmentId: string;
   contactId: string;
   assigneeId: string | null;
+  // Confirmed live 17 Jul closing a real ticket: populated with an ISO
+  // timestamp the moment status flips to Closed, null otherwise. Present on
+  // both the list and single-ticket GET shapes. Standard helpdesk semantics
+  // — Desk clears it back to null if the ticket is later reopened — though
+  // that specific transition wasn't separately re-verified live here.
+  closedTime: string | null;
   // Only present when fetched with ?include=assignee (see getTicket/
   // getTicketsPage below) — avoids a separate agents API call/cache to
   // resolve an owner name. Confirmed live: works on BOTH the list and

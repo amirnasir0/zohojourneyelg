@@ -88,6 +88,7 @@ export async function registerTicketRoutes(app: FastifyInstance) {
         ownerName: fields.ownerName,
         coOwnerName: fields.coOwnerName,
         priority: fields.priority,
+        closedAt: fields.closedAt,
         createdAt: fields.createdAt,
         updatedAt: fields.updatedAt,
         syncedAt: fields.syncedAt,

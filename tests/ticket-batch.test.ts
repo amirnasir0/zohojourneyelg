@@ -64,6 +64,7 @@ function makeTicket(overrides: Partial<DeskTicket> = {}): DeskTicket {
     statusType: 'Open',
     category: 'Defects',
     priority: null,
+    closedTime: null,
     departmentId: 'dept1',
     contactId: 'dc1',
     assigneeId: 'agent1',
@@ -129,5 +130,21 @@ describe('planTicketBatch', () => {
 
     expect(upserts).toEqual([]);
     expect(issues).toEqual([{ deskTicketId: 't1', field: 'contactId', rawValue: 'unknown-desk-contact', reason: 'ORPHAN_TICKET' }]);
+  });
+
+  it('leaves closedAt null for an open ticket', () => {
+    const contactIds = new Map([['dc1', 'local-contact-1']]);
+    const { upserts } = planTicketBatch([makeTicket({ closedTime: null })], tenantConfig, contactIds);
+    expect(upserts[0]?.closedAt).toBeNull();
+  });
+
+  it('maps closedAt from Desk\'s closedTime for a closed ticket', () => {
+    const contactIds = new Map([['dc1', 'local-contact-1']]);
+    const { upserts } = planTicketBatch(
+      [makeTicket({ status: 'Closed', statusType: 'Closed', closedTime: '2026-07-17T13:54:20.000Z' })],
+      tenantConfig,
+      contactIds,
+    );
+    expect(upserts[0]?.closedAt).toEqual(new Date('2026-07-17T13:54:20.000Z'));
   });
 });

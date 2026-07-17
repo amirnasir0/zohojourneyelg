@@ -4,7 +4,7 @@ import { isJourneyStage } from '../lib/journey-view.js';
 
 export async function registerConfigRoutes(app: FastifyInstance) {
   app.get('/config', async (req, reply) => {
-    const { tenant, journey } = app.tenantConfig;
+    const { tenant, journey, desk } = app.tenantConfig;
 
     const payload = {
       tenant: {
@@ -21,6 +21,12 @@ export async function registerConfigRoutes(app: FastifyInstance) {
         stages: journey.stages
           .filter(isJourneyStage)
           .map((s) => ({ index: s.index, display: s.display, owner: s.owner, next_copy: s.next_copy })),
+      },
+      // Static tenant copy, safe to serve pre-login (unlike categories,
+      // which come from a live Desk fetch and stay behind auth on
+      // GET /me/tickets/categories).
+      desk: {
+        response_time_copy: desk.response_time_copy,
       },
     };
 

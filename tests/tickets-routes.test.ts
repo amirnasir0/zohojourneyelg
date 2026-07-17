@@ -149,6 +149,7 @@ const ticketRow = {
   ownerName: null,
   coOwnerName: null,
   priority: null,
+  closedAt: null,
   createdAt: new Date('2026-07-17T00:00:00Z'),
   updatedAt: new Date('2026-07-17T00:00:00Z'),
   syncedAt: new Date('2026-07-17T00:00:00Z'),
@@ -309,6 +310,24 @@ describe('GET /me/tickets/:id authorization scoping', () => {
     const res = await app.inject({ method: 'GET', url: '/me/tickets/ticket-1', headers: authHeader('c1') });
 
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toMatchObject({ id: 'ticket-1', subject: 'Panels not working' });
+    expect(res.json()).toMatchObject({ id: 'ticket-1', subject: 'Panels not working', closed_at: null });
+  });
+
+  it('surfaces closed_at when the underlying ticket is closed', async () => {
+    mockAuthAs('c1');
+    const closedRow = {
+      ...ticketRow,
+      status: 'Closed',
+      statusDisplay: 'Resolved',
+      closedAt: new Date('2026-07-17T13:54:20.000Z'),
+      raw: { statusType: 'Closed' },
+    };
+    vi.mocked(prisma.ticket.findFirst).mockResolvedValue(closedRow as never);
+
+    const app = await buildApp();
+    const res = await app.inject({ method: 'GET', url: '/me/tickets/ticket-1', headers: authHeader('c1') });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ closed_at: '2026-07-17T13:54:20.000Z', is_closed: true });
   });
 });
