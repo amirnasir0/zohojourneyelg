@@ -39,15 +39,18 @@ calls on ticket changes:
 - `POST /webhooks/zoho/salesorder-updated` — fired on **any** Sales_Orders field edit; the handler diffs
   the configured date fields + Stage against what's stored locally and no-ops cleanly when nothing relevant
   changed. This is Elgris's active journey-update webhook.
-- `POST /webhooks/zoho/ticket-updated` — fired on **any** Desk ticket field edit; same diff-before-write
-  no-op pattern as `salesorder-updated`. Configured in **Zoho Desk**, not CRM — see Rule 4 below, a
-  different automation UI entirely.
+- `POST /webhooks/zoho/ticket-updated` — fired on Desk ticket create/update events; same diff-before-write
+  no-op pattern as `salesorder-updated`, but a different DELIVERY mechanism entirely — see Rule 4 below.
 
-Rules 1-3 are configured in Zoho CRM as **Workflow Rules** with a **Webhook** instant action; Rule 4 is
-configured in Zoho Desk's own automation UI. This doc walks through creating them, using Elgris's actual
-seed config (`seed/elgris.tenant-config.json`) as the worked example. If you're setting this up for a
-different tenant, substitute that tenant's own `zoho.journey_module` / field names / `webhooks.*` /
-`desk.*` mapping throughout.
+Rules 1-3 are configured in Zoho CRM as **Workflow Rules** with a **Webhook** instant action — WE define
+the JSON body shape, and the tenant config's `webhooks.*` section maps our chosen key names to what the
+handler reads. Rule 4 is different: this Desk org uses **event-subscription webhooks**
+(Setup → Automation → **Webhooks**, not Workflows), where Zoho defines a fixed event envelope and there's no
+body to configure at all — see Rule 4 for why `webhooks.ticket_updated` in tenant config is consulted
+differently there. This doc walks through creating all four, using Elgris's actual seed config
+(`seed/elgris.tenant-config.json`) as the worked example. If you're setting this up for a different tenant,
+substitute that tenant's own `zoho.journey_module` / field names / `webhooks.*` / `desk.*` mapping
+throughout Rules 1-3 — Rule 4's setup doesn't change per tenant beyond the URL and event selection.
 
 ## Prerequisites
 
@@ -55,7 +58,8 @@ different tenant, substitute that tenant's own `zoho.journey_module` / field nam
   This is **not** the same secret as any other credential in `.env`; it exists purely to authenticate
   inbound webhook calls.
 - You know the deployed API's base URL (e.g. `https://api.elgris.in`).
-- You have CRM Administrator access in Zoho (Workflow Rules require admin permissions).
+- You have CRM Administrator access in Zoho for Rules 1-3 (Workflow Rules require admin permissions), and
+  Desk Administrator access for Rule 4 (Setup → Automation → Webhooks is a separate admin permission).
 
 ## Rule 1 — Journey Stage Updated (Deals) — inactive under the current Elgris config
 
@@ -177,40 +181,62 @@ The handler fetches the current Stage + all configured date fields from Zoho dir
 never needs to carry field values (which are dynamic tenant config, `journey.stages[].date_field`) — nothing
 to keep in sync by hand if a stage's date field is renamed or a new stage is added later.
 
-## Rule 4 — Ticket Updated (Zoho Desk)
+## Rule 4 — Ticket Add/Update (Zoho Desk event-subscription webhook)
 
-**This lives in Zoho Desk's own automation UI, not CRM's Workflow Rules** — a different admin section
-entirely (**Setup → Automation → Workflows**, under Desk, not CRM). Desk workflow actions can only be
-configured to fire when a field is added/edited on a **Ticket**; unlike Rule 3's CRM equivalent, Desk lets
-you pick specific fields to watch (**up to 5**), so trigger-on-any-edit isn't the only option here — but
-this doc uses any-edit anyway, for the same reason as Rule 3: the set of fields customers might care about
-(status, owner, co-owner, category, description) is exactly 5, right at the limit, and any-edit is simpler
-to keep correct as fields get added later.
+**This is a fundamentally different mechanism from Rules 1-3, not just a different admin screen.** Rules
+1-3 are Workflow Rules with a Webhook instant action, where WE choose the JSON body and Zoho substitutes
+merge fields into it at send time. This Desk org has no equivalent "Workflow → Webhook action" for tickets
+in active use; instead it uses Desk's **event-subscription webhooks** — you subscribe a URL to specific
+event types, and Zoho POSTs its own fixed event envelope, with no body to configure at all.
 
-**Setup → Automation → Workflows → Create Workflow** (Desk section)
-
-| Field | Value |
-|---|---|
-| Module | `Tickets` |
-| Workflow name | `Ticket Updated → Webhook` |
-| When | **Ticket** → **Edit** |
-| Criteria | None needed — leave it firing on every ticket edit |
-
-### Instant Action → Webhook
+**Setup → Automation → Webhooks → Add Webhook** (this is a *different* left-nav item from "Workflows" —
+don't look under Workflows for this one)
 
 | Field | Value |
 |---|---|
 | Name | `ticket-updated` |
 | URL | `https://api.elgris.in/webhooks/zoho/ticket-updated?secret=<WEBHOOK_SECRET>` |
-| Method | `POST` |
-| **Body Type** | **`JSON`** (same warning as Rules 1-3) |
-| Body | `{ "record_id": "${Ticket.Ticket Id}" }` |
+| Events | Check **Ticket_Add** and **Ticket_Update** (leave every other event type — Ticket_Delete,
+  Contact_Add, etc. — unchecked; the handler ignores any event type it doesn't recognize, but there's no
+  reason to have Desk send events nobody reads) |
 
-Same minimal payload pattern as Rules 2/3 — just the ticket ID. The handler
-(`src/webhooks/ticket-updated.ts`) fetches the full ticket via `GET /tickets/{id}?include=assignee` and
-diffs it against the local mirror.
+There is no Body Type / JSON key mapping step here — unlike Rules 1-3, Desk defines the payload shape
+itself and it isn't configurable. This also means `webhooks.ticket_updated.record_id_field` in tenant
+config is **not consulted** for this webhook (see "Changing the field mapping" below) — it stays in the
+schema only because Rules 1-3 still need their own mapping keys.
 
-**Two Desk-specific quirks worth knowing before debugging this rule:**
+### What Zoho actually sends
+
+Confirmed against Zoho's own docs (`desk.zoho.com/support/WebhookDocument.do#EventsSupported`), not
+guessed: a delivery is a **JSON array of events** — Desk batches multiple events into one HTTP call — each
+shaped:
+
+```json
+[
+  {
+    "eventType": "Ticket_Update",
+    "payload": { "id": "119514000017429001", "subject": "...", "...": "..." },
+    "prevState": { "...": "..." },
+    "eventTime": "2026-07-17T13:54:20.000Z",
+    "orgId": "60022843030"
+  }
+]
+```
+
+`payload` is Desk's serialization of the ticket at event time — the handler does **not** parse fields out
+of it directly. It only reads `payload.id`, then calls `GET /tickets/{id}?include=assignee` (the same
+fetch-by-ID + diff-before-write path sync and every other webhook in this app already use) and maps the
+result through the same `mapDeskTicketToFields()` sync uses. This sidesteps needing to separately verify
+that Desk's webhook-event ticket serialization matches its REST GET shape field-for-field — one source of
+truth for "what does a ticket look like," regardless of which one triggered the fetch.
+
+The handler accepts either a JSON array (the documented/expected shape) or a single bare event object (a
+defensive fallback, in case a Desk config ever delivers one event un-batched) — anything else (a string, a
+number, `null`) is a `400 INVALID_PAYLOAD`. Each event in a batch is processed independently and reported
+in the response's `results` array; one event failing to resolve (unknown contact, ticket not found) doesn't
+block the others in the same delivery.
+
+### Two Desk-specific quirks worth knowing before debugging this webhook
 
 - Desk's own web UI refers to tickets as **"Cases"** in its URLs (e.g. a ticket's `webUrl` looks like
   `.../ShowHomePage.do#Cases/dv/<id>`), even though every API path, field name, and the `module=tickets`
@@ -225,23 +251,29 @@ diffs it against the local mirror.
 
 ## Testing a rule
 
-1. In the Workflow Rule list, most Zoho editions show a **Webhook Logs** or **Instant Actions → Logs**
-   panel with recent delivery attempts, status codes, and response bodies — use this first to check what
-   Zoho actually sent and what came back.
-2. Manually edit a Deal's Stage (or a Contact) in the CRM to fire the rule, then check the server logs for
-   `[webhooks]` lines.
-3. Expected responses: `200 {"success":true}` on success. `401` means the secret is missing or wrong —
-   re-check the URL's `?secret=` value or the body's `secret` field against the deployment's
-   `WEBHOOK_SECRET`. `400 {"error":"INVALID_PAYLOAD"}` almost always means the body type is form-encoded
-   instead of JSON, or a key name doesn't match `webhooks.*` in the tenant config. `503` means the
+1. **Rules 1-3 (CRM Workflow Rules):** most Zoho editions show a **Webhook Logs** or **Instant Actions →
+   Logs** panel on the rule with recent delivery attempts, status codes, and response bodies — check what
+   Zoho actually sent and what came back. Manually edit a Deal's Stage (or a Contact, or a Sales Order) in
+   the CRM to fire the rule, then check the server logs for `[webhooks]` lines.
+2. **Rule 4 (Desk event-subscription webhook):** the Webhooks list under Setup → Automation shows delivery
+   history per subscribed webhook, same idea. Manually create or edit a test ticket in Desk to fire it.
+3. Expected responses: `200 {"success":true,"processed":N,"results":[...]}` on success (Rule 4's response
+   always has this shape, even for a single-event delivery, because Desk's own envelope can batch more than
+   one event per call — see Rule 4 above). `401` means the secret is missing or wrong — re-check the URL's
+   `?secret=` value against the deployment's `WEBHOOK_SECRET` (Rule 4 has no body `secret` field to fall
+   back on, only the query param — Rules 1-3 can use either). `400 {"error":"INVALID_PAYLOAD"}` on Rules 1-3
+   almost always means the body type is form-encoded instead of JSON, or a key name doesn't match
+   `webhooks.*` in the tenant config; on Rule 4 it means the body wasn't a JSON array or object at all
+   (a malformed delivery, not a mapping problem — there's no key mapping to get wrong here). `503` means the
    deployment's `ZOHO_CLIENT_ID`/`ZOHO_CLIENT_SECRET`/`ZOHO_REFRESH_TOKEN` (Rules 1-3) or
    `ZOHO_DESK_CLIENT_ID`/`ZOHO_DESK_CLIENT_SECRET`/`ZOHO_DESK_REFRESH_TOKEN` (Rule 4) aren't configured —
    the webhook still works for records already synced locally, but can't fetch not-yet-synced ones.
 
 ## Changing the field mapping
 
-If you rename a Zoho field, switch to a different journey module, or use different JSON key names in the
-Workflow Rule body, update the matching tenant config section (no code changes needed):
+This applies to **Rules 1-3 only**. If you rename a Zoho field, switch to a different journey module, or
+use different JSON key names in the Workflow Rule body, update the matching tenant config section (no code
+changes needed):
 
 ```json
 "webhooks": {
@@ -264,14 +296,18 @@ Workflow Rule body, update the matching tenant config section (no code changes n
 ```
 
 Whatever key names you put here must exactly match the JSON keys configured in the Zoho Workflow Rule's
-webhook body — the server reads the payload using these names, not fixed ones.
+webhook body — the server reads the payload using these names, not fixed ones. **`ticket_updated` is the
+one exception** — Rule 4's Desk event-subscription payload isn't tenant-configurable (Zoho fixes the
+envelope shape), so `record_id_field` there is vestigial: it stays in the schema for consistency with the
+other three, but `src/webhooks/ticket-updated.ts` always reads the ticket ID from the fixed `payload.id`
+path regardless of what this key says.
 
 ## Secret rotation
 
 `WEBHOOK_SECRET` is a single shared value, not per-rule. To rotate it: update the deployment's environment
-variable, then update the `?secret=` query param (or body field) in **all active** Workflow Rules'/Desk
-Workflows' webhook configs to match — this includes Rule 4, even though it lives in a different Zoho
-product's admin UI; it's still gated by the same `WEBHOOK_SECRET`. There's a brief window where old and new
-rules could disagree if updated one at a time — for near-zero downtime, temporarily accept either value by
-deploying with the new secret, updating all Zoho rules, then removing the old value, rather than swapping
-them all atomically.
+variable, then update the `?secret=` query param in **all active** Workflow Rules' AND Rule 4's Desk
+webhook subscription to match — Rule 4 only checks the query param (no body `secret` fallback, since Desk
+owns the body shape), so don't forget it specifically. There's a brief window where old and new rules could
+disagree if updated one at a time — for near-zero downtime, temporarily accept either value by deploying
+with the new secret, updating all Zoho rules, then removing the old value, rather than swapping them all
+atomically.

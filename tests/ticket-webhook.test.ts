@@ -132,21 +132,32 @@ beforeEach(async () => {
   await redisMock.flushall();
 });
 
-function postWebhook(body: object) {
+// Real Desk event-subscription envelope shape (confirmed against Zoho's own
+// docs, desk.zoho.com/support/WebhookDocument.do#EventsSupported): a
+// delivery is a JSON ARRAY of { eventType, payload: { id, ... } } objects.
+function deskEvent(eventType: string, ticketId: string | undefined): Record<string, unknown> {
+  return { eventType, payload: ticketId === undefined ? {} : { id: ticketId }, eventTime: '2026-07-17T09:42:05.000Z', orgId: '60022843030' };
+}
+
+function postWebhook(events: unknown) {
   return async (app: ReturnType<typeof Fastify>) =>
-    app.inject({ method: 'POST', url: '/webhooks/zoho/ticket-updated?secret=test-webhook-secret', payload: body });
+    app.inject({ method: 'POST', url: '/webhooks/zoho/ticket-updated?secret=test-webhook-secret', payload: events });
 }
 
 describe('ticket-updated: payload validation and auth', () => {
-  it('returns 400 when record_id is missing', async () => {
+  it('returns 400 when the body is not an array or object (e.g. a bare JSON null)', async () => {
     const app = await buildApp();
-    const res = await postWebhook({})(app);
+    const res = await postWebhook(null)(app);
     expect(res.statusCode).toBe(400);
   });
 
   it('rejects with 401 when the secret is wrong', async () => {
     const app = await buildApp();
-    const res = await app.inject({ method: 'POST', url: '/webhooks/zoho/ticket-updated?secret=wrong', payload: { record_id: 't1' } });
+    const res = await app.inject({
+      method: 'POST',
+      url: '/webhooks/zoho/ticket-updated?secret=wrong',
+      payload: [deskEvent('Ticket_Update', 't1')],
+    });
     expect(res.statusCode).toBe(401);
   });
 });
@@ -159,8 +170,69 @@ describe('ticket-updated: Desk client unavailable', () => {
     app.decorate('deskClient', undefined);
     await registerWebhookRoutes(app);
 
-    const res = await postWebhook({ record_id: 't1' })(app);
+    const res = await postWebhook([deskEvent('Ticket_Update', 't1')])(app);
     expect(res.statusCode).toBe(503);
+  });
+});
+
+describe('ticket-updated: event-type and payload shape handling', () => {
+  it('accepts a single event object (not wrapped in an array) the same way', async () => {
+    deskClient.getTicket.mockResolvedValue(makeTicket());
+    vi.mocked(prisma.ticket.findUnique).mockResolvedValue(existingTicketRow as never);
+
+    const app = await buildApp();
+    const res = await postWebhook(deskEvent('Ticket_Update', 't1'))(app);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ success: true, processed: 1 });
+  });
+
+  it('ignores an event type it does not handle (e.g. Ticket_Delete) without erroring', async () => {
+    const app = await buildApp();
+    const res = await postWebhook([deskEvent('Ticket_Delete', 't1')])(app);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().results[0]).toMatchObject({ event_type: 'Ticket_Delete', ignored: true });
+    expect(deskClient.getTicket).not.toHaveBeenCalled();
+  });
+
+  it('no-ops that one event when payload.id is missing, without failing the whole delivery', async () => {
+    const app = await buildApp();
+    const res = await postWebhook([deskEvent('Ticket_Update', undefined)])(app);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().results[0]).toMatchObject({ event_type: 'Ticket_Update', note: 'missing payload.id' });
+  });
+
+  it('processes Ticket_Add the same way as Ticket_Update', async () => {
+    deskClient.getTicket.mockResolvedValue(makeTicket());
+    vi.mocked(prisma.ticket.findUnique).mockResolvedValue(null as never);
+    vi.mocked(prisma.contact.findUnique).mockResolvedValue({ id: 'c1', deskContactId: 'dc1' } as never);
+    vi.mocked(prisma.ticket.create).mockResolvedValue({} as never);
+
+    const app = await buildApp();
+    const res = await postWebhook([deskEvent('Ticket_Add', 't1')])(app);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().results[0]).toMatchObject({ changed: true });
+    expect(prisma.ticket.create).toHaveBeenCalled();
+  });
+
+  it('processes every event in a batched delivery and reports one result per event', async () => {
+    deskClient.getTicket.mockImplementation((id: string) => Promise.resolve(makeTicket({ id })));
+    vi.mocked(prisma.ticket.findUnique).mockImplementation(((args: { where: { deskTicketId?: string } }) =>
+      Promise.resolve(args.where.deskTicketId === 't1' ? existingTicketRow : null)) as never);
+    vi.mocked(prisma.contact.findUnique).mockResolvedValue({ id: 'c2', deskContactId: 'dc1' } as never);
+    vi.mocked(prisma.ticket.create).mockResolvedValue({} as never);
+
+    const app = await buildApp();
+    const res = await postWebhook([deskEvent('Ticket_Update', 't1'), deskEvent('Ticket_Add', 't2')])(app);
+
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.processed).toBe(2);
+    expect(body.results).toHaveLength(2);
+    expect(deskClient.getTicket).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -168,9 +240,9 @@ describe('ticket-updated: ticket not found in Desk', () => {
   it('no-ops with 200 when getTicket returns null', async () => {
     deskClient.getTicket.mockResolvedValue(null);
     const app = await buildApp();
-    const res = await postWebhook({ record_id: 't1' })(app);
+    const res = await postWebhook([deskEvent('Ticket_Update', 't1')])(app);
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toMatchObject({ success: true });
+    expect(res.json().results[0]).toMatchObject({ note: 'ticket not found in Zoho Desk' });
   });
 });
 
@@ -182,10 +254,10 @@ describe('ticket-updated: new ticket for a known contact', () => {
     vi.mocked(prisma.ticket.create).mockResolvedValue({} as never);
 
     const app = await buildApp();
-    const res = await postWebhook({ record_id: 't1' })(app);
+    const res = await postWebhook([deskEvent('Ticket_Update', 't1')])(app);
 
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toMatchObject({ success: true, changed: true });
+    expect(res.json().results[0]).toMatchObject({ changed: true });
     expect(prisma.ticket.create).toHaveBeenCalledWith({
       data: expect.objectContaining({ deskTicketId: 't1', contactId: 'c1', subject: 'Panels not working' }),
     });
@@ -197,10 +269,10 @@ describe('ticket-updated: new ticket for a known contact', () => {
     vi.mocked(prisma.contact.findUnique).mockResolvedValue(null as never);
 
     const app = await buildApp();
-    const res = await postWebhook({ record_id: 't1' })(app);
+    const res = await postWebhook([deskEvent('Ticket_Update', 't1')])(app);
 
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toMatchObject({ success: true });
+    expect(res.json().results[0]).toMatchObject({ note: 'ticket belongs to an unknown contact, not tracked' });
     expect(prisma.ticket.create).not.toHaveBeenCalled();
   });
 });
@@ -211,10 +283,10 @@ describe('ticket-updated: existing ticket diffing', () => {
     vi.mocked(prisma.ticket.findUnique).mockResolvedValue(existingTicketRow as never);
 
     const app = await buildApp();
-    const res = await postWebhook({ record_id: 't1' })(app);
+    const res = await postWebhook([deskEvent('Ticket_Update', 't1')])(app);
 
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toMatchObject({ success: true, changed: false });
+    expect(res.json().results[0]).toMatchObject({ changed: false });
     expect(prisma.ticket.update).not.toHaveBeenCalled();
   });
 
@@ -225,10 +297,10 @@ describe('ticket-updated: existing ticket diffing', () => {
     vi.mocked(prisma.ticket.update).mockResolvedValue({} as never);
 
     const app = await buildApp();
-    const res = await postWebhook({ record_id: 't1' })(app);
+    const res = await postWebhook([deskEvent('Ticket_Update', 't1')])(app);
 
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toMatchObject({ success: true, changed: true });
+    expect(res.json().results[0]).toMatchObject({ changed: true });
     expect(prisma.ticket.update).toHaveBeenCalledWith({
       where: { id: 'ticket-row-1' },
       data: expect.objectContaining({ status: 'Closed', statusDisplay: 'Resolved' }),
@@ -244,10 +316,10 @@ describe('ticket-updated: existing ticket diffing', () => {
     vi.mocked(prisma.ticket.update).mockResolvedValue({} as never);
 
     const app = await buildApp();
-    const res = await postWebhook({ record_id: 't1' })(app);
+    const res = await postWebhook([deskEvent('Ticket_Update', 't1')])(app);
 
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toMatchObject({ success: true, changed: true });
+    expect(res.json().results[0]).toMatchObject({ changed: true });
     expect(prisma.ticket.update).toHaveBeenCalledWith({
       where: { id: 'ticket-row-1' },
       data: expect.objectContaining({ closedAt: new Date('2026-07-17T13:54:20.000Z') }),
@@ -261,10 +333,10 @@ describe('ticket-updated: existing ticket diffing', () => {
     vi.mocked(prisma.ticket.update).mockResolvedValue({} as never);
 
     const app = await buildApp();
-    const res = await postWebhook({ record_id: 't1' })(app);
+    const res = await postWebhook([deskEvent('Ticket_Update', 't1')])(app);
 
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toMatchObject({ success: true, changed: true });
+    expect(res.json().results[0]).toMatchObject({ changed: true });
     expect(prisma.ticket.update).toHaveBeenCalledWith({
       where: { id: 'ticket-row-1' },
       data: expect.objectContaining({ status: 'Open', closedAt: null }),
