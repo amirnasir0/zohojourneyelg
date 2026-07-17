@@ -1,4 +1,4 @@
-# Zoho CRM Webhook Setup
+# Zoho Webhook Setup (CRM + Desk)
 
 ## Deploy-day validation checklist
 
@@ -57,9 +57,61 @@ throughout Rules 1-3 — Rule 4's setup doesn't change per tenant beyond the URL
 - `WEBHOOK_SECRET` is set in the deployment's environment (a long random value — `openssl rand -hex 24`).
   This is **not** the same secret as any other credential in `.env`; it exists purely to authenticate
   inbound webhook calls.
-- You know the deployed API's base URL (e.g. `https://api.elgris.in`).
+- You know the deployed API's base URL — `https://elgris.webspecia.in` for Elgris, confirmed live (not a
+  placeholder — an earlier draft of this doc used `api.elgris.in`, which was never actually the deployed
+  domain; substitute your own tenant's real domain if you're setting this up elsewhere).
 - You have CRM Administrator access in Zoho for Rules 1-3 (Workflow Rules require admin permissions), and
   Desk Administrator access for Rule 4 (Setup → Automation → Webhooks is a separate admin permission).
+
+## Quick reference — Rule 4 confirmed working recipe
+
+The distilled, verified steps for the Desk ticket webhook. Full rationale, the envelope shape, and the
+handshake-tolerance design are in "Rule 4" further down — read this section first if you just need to
+(re)create the subscription and confirm it's actually live.
+
+**1. Confirm the route exists on the deployment *before* touching Zoho.** This was the actual failure the
+first time through: the deployed server 404'd on `/webhooks/zoho/ticket-updated` (and every other
+`/webhooks/zoho/*` route) because the running deploy predated commit `873c190` — a stale deploy, not a Zoho
+config problem, and `/healthz` returning `200` does **not** rule this out (it only proves the server is up,
+not which routes it has). Check the specific route first:
+
+```bash
+curl -s -o /dev/null -w "%{http_code}\n" https://elgris.webspecia.in/webhooks/zoho/ticket-updated
+```
+
+Expect `200`. If you get `404`, stop here and redeploy from current `main` (this route needs at least
+commit `e90255e`, which adds the handshake-tolerance GET/HEAD handlers this check relies on) — re-run the
+check after the deploy finishes before proceeding to step 2.
+
+**2. Create the subscription** — Setup → Automation → **Webhooks** (a different left-nav item from
+"Workflows" — see "Rule 4" below for why) → Add Webhook:
+
+| Field | Value |
+|---|---|
+| Name | `ticket-updated` |
+| URL | `https://elgris.webspecia.in/webhooks/zoho/ticket-updated?secret=<WEBHOOK_SECRET>` |
+| Events | `Ticket_Add`, `Ticket_Update` |
+
+Saving this fires Desk's URL-validation handshake. As of the handshake-tolerance fix (see "Rule 4" below),
+this route always returns `200` regardless of what's sent — so **a successful save here does not yet prove
+the secret is correct end-to-end**, only that the URL is reachable. Don't stop at "it saved without an
+error."
+
+**3. Confirm a real event actually processes**, not just the handshake:
+
+```bash
+curl -s https://elgris.webspecia.in/webhooks/zoho/ticket-updated \
+  -X POST -H "Content-Type: application/json" \
+  -d '[{"eventType":"Ticket_Update","payload":{"id":"<a real Desk ticket ID>"},"eventTime":"2026-07-17T00:00:00.000Z","orgId":"60022843030"}]' \
+  "?secret=<WEBHOOK_SECRET>"
+```
+
+A genuinely processed delivery returns `{"success":true,"processed":1,"results":[{"event_type":"Ticket_Update","record_id":"...","changed":true|false}]}`.
+A rejected-but-still-200'd request (wrong secret, malformed body) instead returns a top-level
+`{"success":true,"note":"ignored: ..."}` with no `results` array — that's the tell, since the status code
+is `200` either way. Then create or edit a real ticket in Desk and check the server logs for a
+`[webhooks] ticket-updated:` line to confirm the live subscription itself is delivering, not just that the
+endpoint works when called directly.
 
 ## Rule 1 — Journey Stage Updated (Deals) — inactive under the current Elgris config
 
@@ -85,7 +137,7 @@ Add a **Webhook** instant action to the rule (not Email/Task/Field Update).
 | Field | Value |
 |---|---|
 | Name | `journey-updated` |
-| URL | `https://api.elgris.in/webhooks/zoho/journey-updated?secret=<WEBHOOK_SECRET>` |
+| URL | `https://elgris.webspecia.in/webhooks/zoho/journey-updated?secret=<WEBHOOK_SECRET>` |
 | Method | `POST` |
 | **Body Type** | **`JSON`** — see warning below |
 | Body | see mapping table below |
@@ -136,7 +188,7 @@ Resulting body (Zoho substitutes the merge fields at send time):
 | Field | Value |
 |---|---|
 | Name | `contact-updated` |
-| URL | `https://api.elgris.in/webhooks/zoho/contact-updated?secret=<WEBHOOK_SECRET>` |
+| URL | `https://elgris.webspecia.in/webhooks/zoho/contact-updated?secret=<WEBHOOK_SECRET>` |
 | Method | `POST` |
 | **Body Type** | **`JSON`** (same warning as above) |
 | Body | `{ "record_id": "${Contacts.Contact Id}" }` |
@@ -171,7 +223,7 @@ deliveries — billing address edits, carrier changes, etc. — will be no-ops, 
 | Field | Value |
 |---|---|
 | Name | `salesorder-updated` |
-| URL | `https://api.elgris.in/webhooks/zoho/salesorder-updated?secret=<WEBHOOK_SECRET>` |
+| URL | `https://elgris.webspecia.in/webhooks/zoho/salesorder-updated?secret=<WEBHOOK_SECRET>` |
 | Method | `POST` |
 | **Body Type** | **`JSON`** (same warning as Rule 1/2) |
 | Body | `{ "record_id": "${Sales_Orders.Sales Order Id}" }` |
@@ -195,7 +247,7 @@ don't look under Workflows for this one)
 | Field | Value |
 |---|---|
 | Name | `ticket-updated` |
-| URL | `https://api.elgris.in/webhooks/zoho/ticket-updated?secret=<WEBHOOK_SECRET>` |
+| URL | `https://elgris.webspecia.in/webhooks/zoho/ticket-updated?secret=<WEBHOOK_SECRET>` |
 | Events | Check **Ticket_Add** and **Ticket_Update** (leave every other event type — Ticket_Delete,
   Contact_Add, etc. — unchecked; the handler ignores any event type it doesn't recognize, but there's no
   reason to have Desk send events nobody reads) |
