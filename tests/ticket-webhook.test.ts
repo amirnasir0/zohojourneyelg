@@ -144,21 +144,67 @@ function postWebhook(events: unknown) {
     app.inject({ method: 'POST', url: '/webhooks/zoho/ticket-updated?secret=test-webhook-secret', payload: events });
 }
 
-describe('ticket-updated: payload validation and auth', () => {
-  it('returns 400 when the body is not an array or object (e.g. a bare JSON null)', async () => {
+describe('ticket-updated: handshake tolerance — never a non-200 for a probe/malformed request', () => {
+  // Desk's webhook-URL validator sends a handshake request when the URL is
+  // entered/saved in Setup → Automation → Webhooks and requires an
+  // immediate 200 — a 401/400 gets reported back as "invalid URL." So this
+  // route silently no-ops instead of erroring on a bad secret or an
+  // unrecognized body, while still requiring both to be valid before it
+  // touches the DB (see the "existing ticket diffing"/"new ticket" describe
+  // blocks below, which all use a valid secret and a real envelope).
+  it('returns 200 (not 400) when the body is not an array or object (e.g. a bare JSON null)', async () => {
     const app = await buildApp();
     const res = await postWebhook(null)(app);
-    expect(res.statusCode).toBe(400);
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ success: true, note: 'ignored: unrecognized payload shape' });
+    expect(deskClient.getTicket).not.toHaveBeenCalled();
   });
 
-  it('rejects with 401 when the secret is wrong', async () => {
+  it('returns 200 (not 401) when the secret is wrong, and never touches the DB', async () => {
     const app = await buildApp();
     const res = await app.inject({
       method: 'POST',
       url: '/webhooks/zoho/ticket-updated?secret=wrong',
       payload: [deskEvent('Ticket_Update', 't1')],
     });
-    expect(res.statusCode).toBe(401);
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ success: true, note: 'ignored: invalid or missing secret' });
+    expect(deskClient.getTicket).not.toHaveBeenCalled();
+  });
+
+  it('returns 200 (not 401) when the secret is missing entirely', async () => {
+    const app = await buildApp();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/webhooks/zoho/ticket-updated',
+      payload: [deskEvent('Ticket_Update', 't1')],
+    });
+    expect(res.statusCode).toBe(200);
+    expect(deskClient.getTicket).not.toHaveBeenCalled();
+  });
+
+  it('still processes a real event normally when both the secret and payload are valid', async () => {
+    deskClient.getTicket.mockResolvedValue(makeTicket());
+    vi.mocked(prisma.ticket.findUnique).mockResolvedValue(existingTicketRow as never);
+
+    const app = await buildApp();
+    const res = await postWebhook([deskEvent('Ticket_Update', 't1')])(app);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().results[0]).toMatchObject({ changed: false });
+    expect(deskClient.getTicket).toHaveBeenCalledWith('t1');
+  });
+
+  it('GET returns 200, in case the handshake uses that method', async () => {
+    const app = await buildApp();
+    const res = await app.inject({ method: 'GET', url: '/webhooks/zoho/ticket-updated' });
+    expect(res.statusCode).toBe(200);
+  });
+
+  it('HEAD returns 200, in case the handshake uses that method', async () => {
+    const app = await buildApp();
+    const res = await app.inject({ method: 'HEAD', url: '/webhooks/zoho/ticket-updated' });
+    expect(res.statusCode).toBe(200);
   });
 });
 

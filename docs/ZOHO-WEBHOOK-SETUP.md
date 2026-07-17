@@ -231,10 +231,31 @@ that Desk's webhook-event ticket serialization matches its REST GET shape field-
 truth for "what does a ticket look like," regardless of which one triggered the fetch.
 
 The handler accepts either a JSON array (the documented/expected shape) or a single bare event object (a
-defensive fallback, in case a Desk config ever delivers one event un-batched) — anything else (a string, a
-number, `null`) is a `400 INVALID_PAYLOAD`. Each event in a batch is processed independently and reported
-in the response's `results` array; one event failing to resolve (unknown contact, ticket not found) doesn't
-block the others in the same delivery.
+defensive fallback, in case a Desk config ever delivers one event un-batched). Anything else (a string, a
+number, `null`) isn't a recognizable event — see "Handshake tolerance" below for what actually happens to
+those. Each event in a batch is processed independently and reported in the response's `results` array; one
+event failing to resolve (unknown contact, ticket not found) doesn't block the others in the same delivery.
+
+### Handshake tolerance — this route never returns a non-200
+
+Desk's webhook-URL validator sends a request the moment the URL is entered/saved in
+**Setup → Automation → Webhooks** and requires an immediate `200` — if it gets anything else (a `401` for a
+missing/wrong secret, a `400` for a body it doesn't recognize as a real event), Desk reports the URL itself
+as invalid, which is misleading: the webhook is fine, it just correctly rejected a request that wasn't a
+real ticket event.
+
+So `POST /webhooks/zoho/ticket-updated` deliberately **never returns a non-200** for a secret mismatch or an
+unrecognized payload — both cases are silent `200` no-ops (`{"success":true,"note":"ignored: ..."}`), not
+errors. `GET` and `HEAD` on the same path also always return `200`, in case the handshake uses one of those
+instead of `POST`. This doesn't weaken the actual security check: a request still has to pass both the
+secret check AND look like a real Desk event *before anything gets written to the local mirror* — the
+handshake tolerance only changes the HTTP status code returned for a rejected request, not whether it's
+rejected. A genuine processing failure once both checks pass (`ZOHO_DESK_*` not configured) still returns a
+real `503` — that's an operational problem worth surfacing, not a handshake probe.
+
+Practical effect: you cannot tell from the HTTP status alone whether a POST to this endpoint actually did
+anything. Check the server logs (`[webhooks] ticket-updated:` lines) or the response body's `note` /
+`results` field if you need to confirm a specific delivery was processed rather than silently ignored.
 
 ### Two Desk-specific quirks worth knowing before debugging this webhook
 
@@ -257,17 +278,21 @@ block the others in the same delivery.
    the CRM to fire the rule, then check the server logs for `[webhooks]` lines.
 2. **Rule 4 (Desk event-subscription webhook):** the Webhooks list under Setup → Automation shows delivery
    history per subscribed webhook, same idea. Manually create or edit a test ticket in Desk to fire it.
-3. Expected responses: `200 {"success":true,"processed":N,"results":[...]}` on success (Rule 4's response
-   always has this shape, even for a single-event delivery, because Desk's own envelope can batch more than
-   one event per call — see Rule 4 above). `401` means the secret is missing or wrong — re-check the URL's
-   `?secret=` value against the deployment's `WEBHOOK_SECRET` (Rule 4 has no body `secret` field to fall
-   back on, only the query param — Rules 1-3 can use either). `400 {"error":"INVALID_PAYLOAD"}` on Rules 1-3
-   almost always means the body type is form-encoded instead of JSON, or a key name doesn't match
-   `webhooks.*` in the tenant config; on Rule 4 it means the body wasn't a JSON array or object at all
-   (a malformed delivery, not a mapping problem — there's no key mapping to get wrong here). `503` means the
-   deployment's `ZOHO_CLIENT_ID`/`ZOHO_CLIENT_SECRET`/`ZOHO_REFRESH_TOKEN` (Rules 1-3) or
-   `ZOHO_DESK_CLIENT_ID`/`ZOHO_DESK_CLIENT_SECRET`/`ZOHO_DESK_REFRESH_TOKEN` (Rule 4) aren't configured —
-   the webhook still works for records already synced locally, but can't fetch not-yet-synced ones.
+3. Expected responses differ by rule:
+   - **Rules 1-3:** `200 {"success":true}` on success. `401` means the secret is missing or wrong — re-check
+     the URL's `?secret=` value or the body's `secret` field against the deployment's `WEBHOOK_SECRET`.
+     `400 {"error":"INVALID_PAYLOAD"}` almost always means the body type is form-encoded instead of JSON, or
+     a key name doesn't match `webhooks.*` in the tenant config. `503` means
+     `ZOHO_CLIENT_ID`/`ZOHO_CLIENT_SECRET`/`ZOHO_REFRESH_TOKEN` aren't configured.
+   - **Rule 4:** always `200`, even for a bad secret or a malformed body — see "Handshake tolerance" above.
+     A real, successfully-processed delivery looks like `200 {"success":true,"processed":N,"results":[...]}`
+     with each result showing `changed:true`/`changed:false`/a `note` explaining why it was skipped. A
+     rejected-but-still-200'd request shows `{"success":true,"note":"ignored: ..."}` at the top level
+     instead — check the `note` (or the server's `[webhooks] ticket-updated:` log lines) to tell the two
+     apart, since the status code can't. `503` still means genuine trouble:
+     `ZOHO_DESK_CLIENT_ID`/`ZOHO_DESK_CLIENT_SECRET`/`ZOHO_DESK_REFRESH_TOKEN` aren't configured — this is
+     the one failure mode Rule 4 still reports honestly, since it only happens after the secret and payload
+     have both already checked out.
 
 ## Changing the field mapping
 
