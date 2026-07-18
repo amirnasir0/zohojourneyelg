@@ -160,21 +160,21 @@ describe('POST /me/tickets', () => {
   it('returns 503 when Desk is not configured', async () => {
     mockAuthAs('c1');
     const app = await buildApp({ withDesk: false });
-    const res = await app.inject({ method: 'POST', url: '/me/tickets', headers: authHeader('c1'), payload: { category: 'Defects', subject: 'x' } });
-    expect(res.statusCode).toBe(503);
-  });
-
-  it('returns 400 when subject is missing', async () => {
-    mockAuthAs('c1');
-    const app = await buildApp();
     const res = await app.inject({ method: 'POST', url: '/me/tickets', headers: authHeader('c1'), payload: { category: 'Defects' } });
-    expect(res.statusCode).toBe(400);
+    expect(res.statusCode).toBe(503);
   });
 
   it('returns 400 when category is not one of the configured values', async () => {
     mockAuthAs('c1');
     const app = await buildApp();
-    const res = await app.inject({ method: 'POST', url: '/me/tickets', headers: authHeader('c1'), payload: { category: 'Not A Category', subject: 'x' } });
+    const res = await app.inject({ method: 'POST', url: '/me/tickets', headers: authHeader('c1'), payload: { category: 'Not A Category' } });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('returns 400 when category is missing entirely', async () => {
+    mockAuthAs('c1');
+    const app = await buildApp();
+    const res = await app.inject({ method: 'POST', url: '/me/tickets', headers: authHeader('c1'), payload: {} });
     expect(res.statusCode).toBe(400);
   });
 
@@ -207,15 +207,19 @@ describe('POST /me/tickets', () => {
       method: 'POST',
       url: '/me/tickets',
       headers: authHeader('c1'),
-      payload: { category: 'Defects', subject: 'Panels not working' },
+      payload: { category: 'Defects' },
     });
 
     expect(res.statusCode).toBe(201);
-    expect(res.json().ticket).toMatchObject({ id: 'ticket-1', subject: 'Panels not working', category: 'Defects' });
+    // Unwrapped — the RN client reads the created ticket directly off the
+    // response body, not nested under a "ticket" key.
+    expect(res.json()).toMatchObject({ id: 'ticket-1', subject: 'Panels not working', category: 'Defects' });
+    // No client-supplied subject (the app's create screen only collects
+    // category + description) — category doubles as the ticket subject.
     expect(createTicketForContact).toHaveBeenCalledWith(
       deskClient,
       expect.objectContaining({ id: 'c1' }),
-      expect.objectContaining({ departmentId: 'dept1', subject: 'Panels not working', category: 'Defects' }),
+      expect.objectContaining({ departmentId: 'dept1', subject: 'Defects', category: 'Defects' }),
     );
 
     const cached = await redisMock.get('cache:me:tickets:c1');
@@ -232,7 +236,7 @@ describe('POST /me/tickets', () => {
       method: 'POST',
       url: '/me/tickets',
       headers: authHeader('c1'),
-      payload: { category: 'Defects', subject: 'Panels not working again' },
+      payload: { category: 'Defects' },
     });
 
     expect(res.statusCode).toBe(409);
@@ -268,7 +272,7 @@ describe('POST /me/tickets', () => {
       method: 'POST',
       url: '/me/tickets',
       headers: authHeader('c1'),
-      payload: { category: 'Defects', subject: 'Second issue', force: true },
+      payload: { category: 'Defects', force: true },
     });
 
     expect(res.statusCode).toBe(201);

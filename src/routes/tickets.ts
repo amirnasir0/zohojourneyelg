@@ -8,7 +8,6 @@ import { buildTicketSummary, mapDeskTicketToFields, type TicketSummary } from '.
 
 interface CreateTicketBody {
   category?: unknown;
-  subject?: unknown;
   description?: unknown;
   force?: unknown;
 }
@@ -34,16 +33,19 @@ export async function registerTicketRoutes(app: FastifyInstance) {
 
     const body = (req.body ?? {}) as CreateTicketBody;
     const category = typeof body.category === 'string' ? body.category.trim() : '';
-    const subject = typeof body.subject === 'string' ? body.subject.trim() : '';
     const description = typeof body.description === 'string' ? body.description : undefined;
     const force = body.force === true;
 
-    if (!subject) {
-      return reply.code(400).send({ error: 'INVALID_BODY', message: 'subject is required' });
-    }
     if (!category || !app.deskContext.categoryValues.includes(category)) {
       return reply.code(400).send({ error: 'INVALID_BODY', message: 'category must be one of the configured Desk category values' });
     }
+
+    // The app's create-ticket screen collects category + an optional
+    // description only — no separate subject/title field (confirmed
+    // against the shipped RN client's CreateTicketRequest type, which
+    // doesn't declare one). The category value doubles as the ticket
+    // subject, matching Desk's own required `subject` field.
+    const subject = category;
 
     const contact = await prisma.contact.findUnique({ where: { id: req.contactId } });
     if (!contact) {
@@ -95,7 +97,12 @@ export async function registerTicketRoutes(app: FastifyInstance) {
 
     await invalidateTicketsCache(contact.id);
 
-    return reply.code(201).send({ ticket: buildTicketSummary(ticket) });
+    // The RN client reads the created ticket directly off the response body
+    // (`body as CreateTicketResponse`), not wrapped under a `ticket` key —
+    // confirmed against its api/tickets.ts. Matches the 409 conflict body's
+    // existing_ticket, GET /me/tickets (bare array), and GET /me/tickets/:id
+    // (bare object) — every ticket endpoint returns ticket data unwrapped.
+    return reply.code(201).send(buildTicketSummary(ticket));
   });
 
   app.get('/me/tickets', { preHandler: requireAuth }, async (req, reply) => {
