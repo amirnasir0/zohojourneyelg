@@ -1,4 +1,5 @@
 import type { TenantConfig } from '../config/types.js';
+import { getCachedCategoryValues, setCachedCategoryValues } from './desk-categories-cache.js';
 import { createZohoDeskClient, type ZohoDeskClient } from './zoho-desk-client.js';
 
 export interface DeskContext {
@@ -51,4 +52,33 @@ export async function resolveDeskContext(deskClient: ZohoDeskClient, tenantConfi
   const categoryValues = (categoryField.allowedValues ?? []).map((v) => v.value);
 
   return { departmentId: department.id, categoryValues };
+}
+
+/**
+ * Live (Redis-cached, 60s TTL) category picklist, used instead of trusting
+ * the boot-time DeskContext.categoryValues snapshot for anything
+ * customer-facing — a tenant adding/removing a category in Desk shouldn't
+ * require a redeploy to show up in the app. `fallback` (the boot snapshot)
+ * is only used if the live fetch itself fails, so a transient Desk API
+ * hiccup degrades to "slightly stale" rather than a broken ticket screen.
+ */
+export async function getCurrentCategoryValues(deskClient: ZohoDeskClient, tenantConfig: TenantConfig, fallback: string[]): Promise<string[]> {
+  const cached = await getCachedCategoryValues();
+  if (cached) {
+    return cached;
+  }
+
+  try {
+    const fields = await deskClient.getTicketFields();
+    const categoryField = fields.find((f) => f.apiName === tenantConfig.desk.category_field);
+    if (!categoryField) {
+      throw new Error(`no ticket field with apiName "${tenantConfig.desk.category_field}"`);
+    }
+    const values = (categoryField.allowedValues ?? []).map((v) => v.value);
+    await setCachedCategoryValues(values);
+    return values;
+  } catch (err) {
+    console.error('[desk-context] live category fetch failed, falling back to boot-time snapshot', err);
+    return fallback;
+  }
 }

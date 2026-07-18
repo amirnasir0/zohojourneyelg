@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { requireAuth } from '../lib/auth-middleware.js';
 import { createTicketForContact } from '../lib/desk-contact-bridge.js';
+import { getCurrentCategoryValues } from '../lib/desk-context.js';
 import { sendWithEtag } from '../lib/http-cache.js';
 import { prisma } from '../lib/prisma.js';
 import { getCachedTickets, invalidateTicketsCache, setCachedTickets } from '../lib/tickets-cache.js';
@@ -19,11 +20,12 @@ function isOpenTicket(raw: unknown): boolean {
 
 export async function registerTicketRoutes(app: FastifyInstance) {
   app.get('/me/tickets/categories', { preHandler: requireAuth }, async (req, reply) => {
-    if (!app.deskContext) {
+    if (!app.deskClient || !app.deskContext) {
       return reply.code(503).send({ error: 'DESK_UNAVAILABLE' });
     }
 
-    return sendWithEtag(req, reply, { categories: app.deskContext.categoryValues, response_time_copy: app.tenantConfig.desk.response_time_copy }, 'private, no-cache');
+    const categories = await getCurrentCategoryValues(app.deskClient, app.tenantConfig, app.deskContext.categoryValues);
+    return sendWithEtag(req, reply, { categories, response_time_copy: app.tenantConfig.desk.response_time_copy }, 'private, no-cache');
   });
 
   app.post('/me/tickets', { preHandler: requireAuth }, async (req, reply) => {
@@ -36,7 +38,11 @@ export async function registerTicketRoutes(app: FastifyInstance) {
     const description = typeof body.description === 'string' ? body.description : undefined;
     const force = body.force === true;
 
-    if (!category || !app.deskContext.categoryValues.includes(category)) {
+    // Same live (cached) source GET /me/tickets/categories serves, so a
+    // category the customer was just shown always validates here too — the
+    // two never disagree about what's currently valid in Desk.
+    const currentCategories = await getCurrentCategoryValues(app.deskClient, app.tenantConfig, app.deskContext.categoryValues);
+    if (!category || !currentCategories.includes(category)) {
       return reply.code(400).send({ error: 'INVALID_BODY', message: 'category must be one of the configured Desk category values' });
     }
 

@@ -96,6 +96,12 @@ async function buildApp(opts: { withDesk?: boolean } = { withDesk: true }) {
   return app;
 }
 
+function mockTicketFields(categoryValues: string[]) {
+  deskClient.getTicketFields.mockResolvedValue([
+    { apiName: 'category', displayLabel: 'Category', allowedValues: categoryValues.map((value) => ({ value })) },
+  ] as never);
+}
+
 function mockAuthAs(contactId: string) {
   vi.mocked(verifySessionToken).mockResolvedValue({ sub: contactId, jti: `jti-${contactId}` });
   vi.mocked(prisma.session.findUnique).mockResolvedValue({
@@ -113,6 +119,9 @@ const authHeader = (contactId: string) => ({ authorization: `Bearer token-${cont
 beforeEach(async () => {
   vi.clearAllMocks();
   await redisMock.flushall();
+  // Matches the boot-time deskContext snapshot by default — tests that
+  // care about the live-vs-boot-snapshot distinction override this.
+  mockTicketFields(['General', 'Defects']);
 });
 
 describe('GET /me/tickets/categories', () => {
@@ -126,6 +135,39 @@ describe('GET /me/tickets/categories', () => {
       categories: ['General', 'Defects'],
       response_time_copy: 'Our team typically responds within 24 hours.',
     });
+  });
+
+  it('reflects a live Desk picklist change, not the frozen boot-time snapshot', async () => {
+    // deskContext.categoryValues (the boot snapshot) stays ['General',
+    // 'Defects'] — only the live Desk fetch reflects the "admin just edited
+    // the picklist" state, proving the route doesn't read the stale value.
+    mockTicketFields(['Billing', 'Installation', 'Warranty']);
+    mockAuthAs('c1');
+    const app = await buildApp();
+    const res = await app.inject({ method: 'GET', url: '/me/tickets/categories', headers: authHeader('c1') });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().categories).toEqual(['Billing', 'Installation', 'Warranty']);
+  });
+
+  it('serves a second request from cache without a second live fetch', async () => {
+    mockAuthAs('c1');
+    const app = await buildApp();
+
+    await app.inject({ method: 'GET', url: '/me/tickets/categories', headers: authHeader('c1') });
+    await app.inject({ method: 'GET', url: '/me/tickets/categories', headers: authHeader('c1') });
+
+    expect(deskClient.getTicketFields).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back to the boot-time snapshot if the live fetch fails', async () => {
+    deskClient.getTicketFields.mockRejectedValue(new Error('Desk API unreachable'));
+    mockAuthAs('c1');
+    const app = await buildApp();
+    const res = await app.inject({ method: 'GET', url: '/me/tickets/categories', headers: authHeader('c1') });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().categories).toEqual(['General', 'Defects']);
   });
 
   it('returns 503 when Desk is not configured', async () => {
@@ -169,6 +211,40 @@ describe('POST /me/tickets', () => {
     const app = await buildApp();
     const res = await app.inject({ method: 'POST', url: '/me/tickets', headers: authHeader('c1'), payload: { category: 'Not A Category' } });
     expect(res.statusCode).toBe(400);
+  });
+
+  it('validates category against the live Desk list, not the frozen boot snapshot', async () => {
+    // 'Warranty' isn't in deskContext's boot-time snapshot (['General',
+    // 'Defects']) but is a category an admin just added in Desk — must be
+    // accepted, proving validation reads the same live source the
+    // categories screen does, not the stale one.
+    mockTicketFields(['General', 'Defects', 'Warranty']);
+    mockAuthAs('c1');
+    vi.mocked(prisma.contact.findUnique).mockResolvedValue({ id: 'c1', deskContactId: 'dc1' } as never);
+    vi.mocked(prisma.ticket.findMany).mockResolvedValue([]);
+    vi.mocked(createTicketForContact).mockResolvedValue({ id: 't1' } as never);
+    deskClient.getTicket.mockResolvedValue({
+      id: 't1',
+      ticketNumber: '1001',
+      subject: 'Warranty',
+      description: null,
+      status: 'Open',
+      statusType: 'Open',
+      category: 'Warranty',
+      priority: null,
+      departmentId: 'dept1',
+      contactId: 'dc1',
+      assigneeId: null,
+      assignee: null,
+      createdTime: '2026-07-17T00:00:00Z',
+      modifiedTime: '2026-07-17T00:00:00Z',
+    });
+    vi.mocked(prisma.ticket.create).mockResolvedValue({ ...ticketRow, category: 'Warranty' } as never);
+
+    const app = await buildApp();
+    const res = await app.inject({ method: 'POST', url: '/me/tickets', headers: authHeader('c1'), payload: { category: 'Warranty' } });
+
+    expect(res.statusCode).toBe(201);
   });
 
   it('returns 400 when category is missing entirely', async () => {
