@@ -38,6 +38,29 @@ export interface DeskFieldMeta {
   allowedValues?: DeskPicklistValue[];
 }
 
+// Confirmed live 27 Jul: a picklist field's allowedValues here (from a
+// LAYOUT's field customization) is a plain string[], NOT the
+// {value, statusType?}[] shape organizationFields returns for the same
+// field name — different endpoint, different shape, don't assume they
+// match. This is also the ONLY place that reflects which subset of a
+// field's master picklist a given department's layout actually shows —
+// organizationFields returns the org-wide master list, which can (and in
+// production does) include values a layout no longer exposes.
+export interface DeskLayoutField {
+  apiName: string;
+  allowedValues?: string[];
+}
+
+export interface DeskLayoutSection {
+  fields: DeskLayoutField[];
+}
+
+export interface DeskLayout {
+  id: string;
+  departmentId: string;
+  sections?: DeskLayoutSection[];
+}
+
 export interface DeskContact {
   id: string;
   firstName: string | null;
@@ -139,6 +162,11 @@ export interface CreateContactInput {
 export interface ZohoDeskClient {
   getDepartments(): Promise<DeskDepartment[]>;
   getTicketFields(): Promise<DeskFieldMeta[]>;
+  // Layout list (lighter shape, no field customization) and single-layout
+  // detail (full sections/fields, including per-field allowedValues) — see
+  // DeskLayout above for why both are needed.
+  getLayouts(): Promise<DeskLayout[]>;
+  getLayout(layoutId: string): Promise<DeskLayout>;
   // No confirmed server-side "modified since" filter for Desk's ticket list
   // (unlike CRM's If-Modified-Since support) — every call does a full page
   // walk; the caller's idempotent upsert makes repeated full pulls cheap
@@ -277,6 +305,28 @@ class ZohoDeskApiClient implements ZohoDeskClient {
     }
     const data = (await res.json()) as { data?: DeskFieldMeta[] };
     return data.data ?? [];
+  }
+
+  async getLayouts(): Promise<DeskLayout[]> {
+    const res = await this.request('/layouts?module=tickets');
+    if (!res.ok) {
+      const body = await res.text().catch(() => '<unreadable body>');
+      throw new Error(`Zoho Desk getLayouts failed: status=${res.status} body=${body}`);
+    }
+    const data = (await res.json()) as { data?: DeskLayout[] };
+    return data.data ?? [];
+  }
+
+  // Confirmed live: the list endpoint above doesn't include `sections` at
+  // all (lighter shape) — only this single-layout fetch returns field
+  // customization/allowedValues.
+  async getLayout(layoutId: string): Promise<DeskLayout> {
+    const res = await this.request(`/layouts/${encodeURIComponent(layoutId)}`);
+    if (!res.ok) {
+      const body = await res.text().catch(() => '<unreadable body>');
+      throw new Error(`Zoho Desk getLayout failed: layoutId=${layoutId} status=${res.status} body=${body}`);
+    }
+    return (await res.json()) as DeskLayout;
   }
 
   // Cheap for discovering IDs/modifiedTime/status across every ticket — but

@@ -74,11 +74,13 @@ const tenantConfig: TenantConfig = {
   },
 };
 
-const deskContext = { departmentId: 'dept1', categoryValues: ['General', 'Defects'] };
+const deskContext = { departmentId: 'dept1', layoutId: 'layout1', categoryValues: ['General', 'Defects'] };
 
 const deskClient = {
   getDepartments: vi.fn(),
   getTicketFields: vi.fn(),
+  getLayouts: vi.fn(),
+  getLayout: vi.fn(),
   getTicketsPage: vi.fn(),
   getTicket: vi.fn(),
   createTicket: vi.fn(),
@@ -96,10 +98,16 @@ async function buildApp(opts: { withDesk?: boolean } = { withDesk: true }) {
   return app;
 }
 
-function mockTicketFields(categoryValues: string[]) {
-  deskClient.getTicketFields.mockResolvedValue([
-    { apiName: 'category', displayLabel: 'Category', allowedValues: categoryValues.map((value) => ({ value })) },
-  ] as never);
+// Category values now come from the department's LAYOUT field
+// customization (getLayout), not the org-wide field metadata
+// (getTicketFields) — see desk-context.ts for why (a layout can show a
+// subset of a field's master picklist).
+function mockCategoryLayout(categoryValues: string[]) {
+  deskClient.getLayout.mockResolvedValue({
+    id: 'layout1',
+    departmentId: 'dept1',
+    sections: [{ fields: [{ apiName: 'category', allowedValues: categoryValues }] }],
+  } as never);
 }
 
 function mockAuthAs(contactId: string) {
@@ -121,7 +129,7 @@ beforeEach(async () => {
   await redisMock.flushall();
   // Matches the boot-time deskContext snapshot by default — tests that
   // care about the live-vs-boot-snapshot distinction override this.
-  mockTicketFields(['General', 'Defects']);
+  mockCategoryLayout(['General', 'Defects']);
 });
 
 describe('GET /me/tickets/categories', () => {
@@ -141,7 +149,7 @@ describe('GET /me/tickets/categories', () => {
     // deskContext.categoryValues (the boot snapshot) stays ['General',
     // 'Defects'] — only the live Desk fetch reflects the "admin just edited
     // the picklist" state, proving the route doesn't read the stale value.
-    mockTicketFields(['Billing', 'Installation', 'Warranty']);
+    mockCategoryLayout(['Billing', 'Installation', 'Warranty']);
     mockAuthAs('c1');
     const app = await buildApp();
     const res = await app.inject({ method: 'GET', url: '/me/tickets/categories', headers: authHeader('c1') });
@@ -157,11 +165,11 @@ describe('GET /me/tickets/categories', () => {
     await app.inject({ method: 'GET', url: '/me/tickets/categories', headers: authHeader('c1') });
     await app.inject({ method: 'GET', url: '/me/tickets/categories', headers: authHeader('c1') });
 
-    expect(deskClient.getTicketFields).toHaveBeenCalledTimes(1);
+    expect(deskClient.getLayout).toHaveBeenCalledTimes(1);
   });
 
   it('falls back to the boot-time snapshot if the live fetch fails', async () => {
-    deskClient.getTicketFields.mockRejectedValue(new Error('Desk API unreachable'));
+    deskClient.getLayout.mockRejectedValue(new Error('Desk API unreachable'));
     mockAuthAs('c1');
     const app = await buildApp();
     const res = await app.inject({ method: 'GET', url: '/me/tickets/categories', headers: authHeader('c1') });
@@ -218,7 +226,7 @@ describe('POST /me/tickets', () => {
     // 'Defects']) but is a category an admin just added in Desk — must be
     // accepted, proving validation reads the same live source the
     // categories screen does, not the stale one.
-    mockTicketFields(['General', 'Defects', 'Warranty']);
+    mockCategoryLayout(['General', 'Defects', 'Warranty']);
     mockAuthAs('c1');
     vi.mocked(prisma.contact.findUnique).mockResolvedValue({ id: 'c1', deskContactId: 'dc1' } as never);
     vi.mocked(prisma.ticket.findMany).mockResolvedValue([]);

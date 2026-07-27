@@ -24,7 +24,7 @@ export async function registerTicketRoutes(app: FastifyInstance) {
       return reply.code(503).send({ error: 'DESK_UNAVAILABLE' });
     }
 
-    const categories = await getCurrentCategoryValues(app.deskClient, app.tenantConfig, app.deskContext.categoryValues);
+    const categories = await getCurrentCategoryValues(app.deskClient, app.tenantConfig, app.deskContext.layoutId, app.deskContext.categoryValues);
     return sendWithEtag(req, reply, { categories, response_time_copy: app.tenantConfig.desk.response_time_copy }, 'private, no-cache');
   });
 
@@ -41,7 +41,7 @@ export async function registerTicketRoutes(app: FastifyInstance) {
     // Same live (cached) source GET /me/tickets/categories serves, so a
     // category the customer was just shown always validates here too — the
     // two never disagree about what's currently valid in Desk.
-    const currentCategories = await getCurrentCategoryValues(app.deskClient, app.tenantConfig, app.deskContext.categoryValues);
+    const currentCategories = await getCurrentCategoryValues(app.deskClient, app.tenantConfig, app.deskContext.layoutId, app.deskContext.categoryValues);
     if (!category || !currentCategories.includes(category)) {
       return reply.code(400).send({ error: 'INVALID_BODY', message: 'category must be one of the configured Desk category values' });
     }

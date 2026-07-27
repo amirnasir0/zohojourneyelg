@@ -1,9 +1,10 @@
 import type { TenantConfig } from '../config/types.js';
 import { getCachedCategoryValues, setCachedCategoryValues } from './desk-categories-cache.js';
-import { createZohoDeskClient, type ZohoDeskClient } from './zoho-desk-client.js';
+import { createZohoDeskClient, type DeskLayout, type ZohoDeskClient } from './zoho-desk-client.js';
 
 export interface DeskContext {
   departmentId: string;
+  layoutId: string;
   categoryValues: string[];
 }
 
@@ -24,18 +25,38 @@ export function tryCreateDeskClient(tenantConfig: TenantConfig, logPrefix: strin
 }
 
 /**
+ * Confirmed live 27 Jul: a field's org-wide master picklist
+ * (getTicketFields/organizationFields) is a SUPERSET of what a given
+ * department's layout actually shows — production had "General"/"Defects"
+ * still present at the org level long after they were removed from the
+ * layout's Category field. The layout's own field customization is the one
+ * that matches what a real ticket-creation form (and therefore this app)
+ * should offer, so category resolution always goes through here instead.
+ */
+function extractCategoryValues(layout: DeskLayout, categoryFieldApiName: string): string[] {
+  const fields = layout.sections?.flatMap((s) => s.fields) ?? [];
+  const categoryField = fields.find((f) => f.apiName === categoryFieldApiName);
+  if (!categoryField) {
+    throw new Error(`Zoho Desk: layout "${layout.id}" has no field with apiName "${categoryFieldApiName}" (configured as desk.category_field)`);
+  }
+  return categoryField.allowedValues ?? [];
+}
+
+/**
  * Startup-style resolution, mirroring validate-fields.ts's role for CRM:
  * turns tenant config's human-chosen department_name into the department ID
- * Desk's ticket-create API actually requires, and fetches the live category
- * picklist rather than hardcoding it. Desk department names have been
- * observed to carry stray trailing whitespace in the admin UI, so the match
- * trims both sides. Throws (rather than returning a boolean) because unlike
- * a single missing reference field, a failure here means ticket creation
- * cannot work at all — callers decorate the app with `undefined` on catch,
- * same as the zohoClient "not configured" fallback in server.ts.
+ * Desk's ticket-create API actually requires, finds that department's
+ * ticket layout, and fetches the live category picklist FROM THAT LAYOUT
+ * (not the org-wide field metadata — see extractCategoryValues) rather than
+ * hardcoding it. Desk department names have been observed to carry stray
+ * trailing whitespace in the admin UI, so the match trims both sides.
+ * Throws (rather than returning a boolean) because unlike a single missing
+ * reference field, a failure here means ticket creation cannot work at
+ * all — callers decorate the app with `undefined` on catch, same as the
+ * zohoClient "not configured" fallback in server.ts.
  */
 export async function resolveDeskContext(deskClient: ZohoDeskClient, tenantConfig: TenantConfig): Promise<DeskContext> {
-  const [departments, fields] = await Promise.all([deskClient.getDepartments(), deskClient.getTicketFields()]);
+  const [departments, layouts] = await Promise.all([deskClient.getDepartments(), deskClient.getLayouts()]);
 
   const wantedName = tenantConfig.desk.department_name.trim();
   const department = departments.find((d) => d.name.trim() === wantedName);
@@ -44,14 +65,17 @@ export async function resolveDeskContext(deskClient: ZohoDeskClient, tenantConfi
     throw new Error(`Zoho Desk: no department matches configured desk.department_name "${tenantConfig.desk.department_name}" (seen: ${seen})`);
   }
 
-  const categoryField = fields.find((f) => f.apiName === tenantConfig.desk.category_field);
-  if (!categoryField) {
-    throw new Error(`Zoho Desk: no ticket field with apiName "${tenantConfig.desk.category_field}" (configured as desk.category_field)`);
+  const layoutSummary = layouts.find((l) => l.departmentId === department.id);
+  if (!layoutSummary) {
+    throw new Error(`Zoho Desk: no ticket layout found for department "${department.name}" (id ${department.id})`);
   }
 
-  const categoryValues = (categoryField.allowedValues ?? []).map((v) => v.value);
+  // The list endpoint above never includes `sections` — need the
+  // single-layout detail fetch for field customization/allowedValues.
+  const layout = await deskClient.getLayout(layoutSummary.id);
+  const categoryValues = extractCategoryValues(layout, tenantConfig.desk.category_field);
 
-  return { departmentId: department.id, categoryValues };
+  return { departmentId: department.id, layoutId: layout.id, categoryValues };
 }
 
 /**
@@ -62,19 +86,15 @@ export async function resolveDeskContext(deskClient: ZohoDeskClient, tenantConfi
  * is only used if the live fetch itself fails, so a transient Desk API
  * hiccup degrades to "slightly stale" rather than a broken ticket screen.
  */
-export async function getCurrentCategoryValues(deskClient: ZohoDeskClient, tenantConfig: TenantConfig, fallback: string[]): Promise<string[]> {
+export async function getCurrentCategoryValues(deskClient: ZohoDeskClient, tenantConfig: TenantConfig, layoutId: string, fallback: string[]): Promise<string[]> {
   const cached = await getCachedCategoryValues();
   if (cached) {
     return cached;
   }
 
   try {
-    const fields = await deskClient.getTicketFields();
-    const categoryField = fields.find((f) => f.apiName === tenantConfig.desk.category_field);
-    if (!categoryField) {
-      throw new Error(`no ticket field with apiName "${tenantConfig.desk.category_field}"`);
-    }
-    const values = (categoryField.allowedValues ?? []).map((v) => v.value);
+    const layout = await deskClient.getLayout(layoutId);
+    const values = extractCategoryValues(layout, tenantConfig.desk.category_field);
     await setCachedCategoryValues(values);
     return values;
   } catch (err) {

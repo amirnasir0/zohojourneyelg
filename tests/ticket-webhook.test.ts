@@ -69,6 +69,8 @@ const tenantConfig: TenantConfig = {
 const deskClient = {
   getDepartments: vi.fn(),
   getTicketFields: vi.fn(),
+  getLayouts: vi.fn(),
+  getLayout: vi.fn(),
   getTicketsPage: vi.fn(),
   getTicket: vi.fn(),
   createTicket: vi.fn(),
