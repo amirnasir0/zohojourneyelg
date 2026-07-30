@@ -64,6 +64,16 @@ const tenantConfig: TenantConfig = {
     status_display_map: { Open: 'Open', Closed: 'Resolved' },
     response_time_copy: 'Our team typically responds within 24 hours.',
   },
+  documents: {
+    stage_groups: [
+      {
+        stage_group_key: 'documents_required',
+        group_label: 'Documents Required',
+        requires_approval: true,
+        documents: [{ key: 'aadhaar_card', display_name: 'Aadhaar Card' }],
+      },
+    ],
+  },
 };
 
 const deskClient = {

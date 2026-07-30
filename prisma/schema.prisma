@@ -12,6 +12,19 @@ enum StageHistorySource {
   SYNC
 }
 
+enum StaffRole {
+  ADMIN
+  EMPLOYEE
+}
+
+enum DocumentStatus {
+  NOT_UPLOADED
+  UPLOADED
+  SUBMITTED_FOR_REVIEW
+  APPROVED
+  REJECTED
+}
+
 model TenantConfig {
   id        String   @id @default(uuid())
   config    Json
@@ -35,11 +48,18 @@ model Contact {
   email          String?
   raw            Json
   syncedAt       DateTime @map("synced_at")
+  // Set true when staff submits a document checklist for review (see
+  // Document below), cleared once the customer has responded to every
+  // SUBMITTED_FOR_REVIEW document — a real stored flag (not purely computed)
+  // so the app can show a badge without re-scanning every document row on
+  // each read. Deliberately no push on set — customer sees it on next open.
+  pendingCustomerReview Boolean @default(false) @map("pending_customer_review")
 
   journeys       Journey[]
   sessions       Session[]
   deviceTokens   DeviceToken[]
   tickets        Ticket[]
+  documents      Document[]
 
   @@index([altMobileE164])
   @@map("contacts")
@@ -55,10 +75,18 @@ model Journey {
   refValues     Json     @map("ref_values")
   raw           Json
   syncedAt      DateTime @map("synced_at")
+  // Zoho's Owner.id for this Sales_Order/journey record (a standard CRM v8
+  // lookup field, {id, name, email}) — powers staff/employee customer
+  // scoping (M9): an employee only sees contacts whose journey Owner matches
+  // their own staff_users.zoho_owner_id. Nullable/indexed since it's fetched
+  // going forward, not backfilled retroactively until the next full sync.
+  ownerZohoId   String?  @map("owner_zoho_id")
 
   contact       Contact       @relation(fields: [contactId], references: [id], onDelete: Cascade)
   stageHistory  StageHistory[]
+  documents     Document[]
 
+  @@index([ownerZohoId])
   @@map("journeys")
 }
 
@@ -110,6 +138,75 @@ model Ticket {
 
   @@index([contactId])
   @@map("tickets")
+}
+
+// Staff/employee back office (M9) — deliberately separate from Contact/
+// Session: a wholly different auth namespace (email+password, not OTP),
+// different JWT audience (see src/lib/staff-jwt.ts), different data scope
+// (Zoho CRM Owner-based, not "logged in as me").
+model StaffUser {
+  id           String    @id @default(uuid())
+  email        String    @unique
+  passwordHash String    @map("password_hash")
+  role         StaffRole
+  // Zoho CRM user id (Owner.id on a Sales_Orders record) — null for an admin
+  // who doesn't need customer-scoping (admins see everyone regardless), set
+  // for an employee so GET /staff/customers can scope to their own accounts.
+  zohoOwnerId  String?   @map("zoho_owner_id")
+  fullName     String?   @map("full_name")
+  active       Boolean   @default(true)
+  createdAt    DateTime  @default(now()) @map("created_at")
+
+  sessions          StaffSession[]
+  uploadedDocuments Document[] @relation("DocumentUploadedBy")
+
+  @@map("staff_users")
+}
+
+// Mirrors Session exactly (staffId instead of contactId) — same jti-based
+// server-side revocation model.
+model StaffSession {
+  id        String    @id @default(uuid())
+  staffId   String    @map("staff_id")
+  jti       String    @unique
+  expiresAt DateTime  @map("expires_at")
+  revokedAt DateTime? @map("revoked_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  staff StaffUser @relation(fields: [staffId], references: [id], onDelete: Cascade)
+
+  @@map("staff_sessions")
+}
+
+// One row per (contact, document_key) — created lazily on first staff
+// upload, never pre-seeded for every configured document key. GET endpoints
+// (both staff and customer) synthesize NOT_UPLOADED placeholders for any
+// configured key with no row yet — see src/lib/document-view.ts.
+model Document {
+  id               String         @id @default(uuid())
+  contactId        String         @map("contact_id")
+  // Nullable: a document can't be pushed to Zoho as an Attachment until the
+  // contact has a resolvable Sales_Order/journey to attach it to — see the
+  // upload route's journey-resolution logic.
+  journeyId        String?        @map("journey_id")
+  documentKey      String         @map("document_key")
+  stageGroupKey    String         @map("stage_group_key")
+  fileName         String?        @map("file_name")
+  fileSize         Int?           @map("file_size")
+  zohoAttachmentId String?        @map("zoho_attachment_id")
+  status           DocumentStatus @default(NOT_UPLOADED)
+  uploadedById     String?        @map("uploaded_by")
+  uploadedAt       DateTime?      @map("uploaded_at")
+  reviewedAt       DateTime?      @map("reviewed_at")
+  reviewNote       String?        @map("review_note")
+
+  contact    Contact    @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  journey    Journey?   @relation(fields: [journeyId], references: [id], onDelete: SetNull)
+  uploadedBy StaffUser? @relation("DocumentUploadedBy", fields: [uploadedById], references: [id], onDelete: SetNull)
+
+  @@unique([contactId, documentKey])
+  @@index([contactId])
+  @@map("documents")
 }
 
 model OtpAttempt {

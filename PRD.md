@@ -2,7 +2,7 @@
 **Product:** White-label customer journey tracking backend for Zoho CRM businesses
 **Tenant #1:** Elgris Solar (funds initial build)
 **Vendor/Owner:** Cognidom Technologies Private Limited (Webspecia)
-**Version:** 2.1 | **Date:** 16 July 2026
+**Version:** 2.2 | **Date:** 31 July 2026
 **Frontend:** React Native (iOS & Android), config-driven branding
 **Source of truth per tenant:** Zoho CRM (Contacts + journey module)
 
@@ -23,10 +23,10 @@ Elgris Solar is tenant #1 and defines the reference implementation (24-stage sol
 
 - No multi-tenant shared database (one isolated deployment per client — see §4)
 - No customer self-registration (customers exist in CRM, created by the business)
-- No app→CRM write-back (except audit logs and Zoho Desk ticket creation, §11.4)
-- No document upload (Phase 2)
+- No app→CRM write-back except: audit logs, Zoho Desk ticket creation (§11.4), and staff-uploaded documents pushed as Zoho CRM Attachments (§11.5)
 - No ticket threads, replies, or attachments — Desk ticketing (§11.4) is create + track only; conversation-level features are a later phase
-- No admin/manager roles in-app (customer role only)
+- No customer-facing document download from Zoho — the staff/document module (§11.5) is upload + track + approve/reject only; retrieving a previously-uploaded file's bytes back out is a later phase
+- No staff-side UI in this repo — the staff/employee module (§11.5) is a backend API surface only, consumed by a separate dedicated staff app (different Expo project)
 
 ## 3. System Architecture
 
@@ -137,6 +137,7 @@ Single-row table holding the config JSON (§5) + version + updated_at. Secrets (
 | mobile_e164 | text unique, indexed | normalized `+91XXXXXXXXXX` — login key |
 | full_name / email | text | |
 | desk_contact_id | text unique, nullable | Zoho Desk contact, lazily resolved on first ticket action (§11.4) |
+| pending_customer_review | boolean, default false | set true when staff submits a document checklist for review (§11.5), cleared once the customer has responded to every submitted document |
 | raw | jsonb | full CRM payload |
 | synced_at | timestamptz | |
 
@@ -168,6 +169,7 @@ Single-row table holding the config JSON (§5) + version + updated_at. Secrets (
 | stage | text | current CRM stage value |
 | stage_index | int | resolved via journey JSON |
 | ref_values | jsonb | values for tenant's reference_fields |
+| owner_zoho_id | text, nullable, indexed | Zoho `Owner.id` on the CRM record — powers staff/employee customer scoping (§11.5) |
 | raw | jsonb | |
 | synced_at | timestamptz | |
 
@@ -176,6 +178,42 @@ deal/journey FK, from_stage, to_stage, changed_at, source (webhook/sync). Powers
 
 ### otp_attempts, sessions, device_tokens
 As before: OTP audit, JWT revocation (`jti`), FCM tokens.
+
+### staff_users / staff_sessions  *(staff/employee back office — see §11.5)*
+A wholly separate auth namespace from `contacts`/`sessions` — email+password, not OTP, and its
+own JWT audience so a customer token can never authenticate a staff route or vice versa.
+
+| Field (staff_users) | Type | Notes |
+|---|---|---|
+| id | uuid PK | |
+| email | text unique | |
+| password_hash | text | bcrypt |
+| role | enum(admin, employee) | |
+| zoho_owner_id | text, nullable | matches a journey's `owner_zoho_id`; null for admins (who see every customer regardless) |
+| full_name | text, nullable | |
+| active | boolean, default true | |
+| created_at | timestamptz | |
+
+`staff_sessions` mirrors `sessions` exactly (`staff_id` FK, `jti` unique, `expires_at`, `revoked_at`).
+
+### documents  *(staff-uploaded, customer-tracked — see §11.5)*
+One row per (contact, document_key), created lazily on first staff upload — never pre-seeded
+for every document a tenant's config defines. `GET` endpoints synthesize a `not_uploaded`
+placeholder for any configured key with no row yet.
+
+| Field | Type | Notes |
+|---|---|---|
+| id | uuid PK | |
+| contact_id | uuid FK | |
+| journey_id | uuid FK, nullable | the Sales_Order this was attached to in Zoho; null until a journey exists to attach to |
+| document_key | text | matches a key in tenant config's `documents.stage_groups[].documents[]` |
+| stage_group_key | text | which stage-group this document belongs to |
+| file_name / file_size | text / int, nullable | |
+| zoho_attachment_id | text, nullable | the Zoho CRM Attachment id — the file's bytes live in Zoho, not this DB |
+| status | enum(not_uploaded, uploaded, submitted_for_review, approved, rejected) | |
+| uploaded_by | uuid FK (staff_users), nullable | |
+| uploaded_at / reviewed_at | timestamptz, nullable | |
+| review_note | text, nullable | set when a customer rejects, read by staff as "changes requested" |
 
 ## 8. Phone Normalization (critical spec)
 
@@ -219,16 +257,23 @@ RS256, 90-day expiry, `jti` validated against sessions (server-side revoke). `PO
 | POST | /me/tickets | Create a support ticket — `{ category, description? }`; see duplicate-guard below |
 | GET | /me/tickets | List, newest first |
 | GET | /me/tickets/:id | Detail |
+| GET | /me/documents | Stage-grouped document checklist (§11.5) — `not_uploaded`/`uploaded`/`submitted_for_review`/`approved`/`rejected` per document |
+| POST | /me/documents/:key/respond | Customer approve/reject a submitted document — `{ approved, note? }` |
 | POST | /me/device-token | Register FCM token |
 | POST | /auth/send-otp, /auth/verify-otp, /auth/logout | Auth |
+| POST | /staff/auth/login, /staff/auth/logout | Staff auth — separate JWT audience, email+password (§11.5) |
 | POST | /webhooks/zoho/journey-updated, /webhooks/zoho/contact-updated, /webhooks/zoho/ticket-updated | Zoho → backend (secret-validated) |
 | GET | /healthz, /healthz/sync | Probes |
 
 **Payloads are screen-shaped, not entity-shaped** — home screen renders in one round trip. ETag/If-None-Match on all `/me/*` GETs so repeat opens cost ~0 bytes.
 
-**Authorization:** every journey/ticket query scoped `WHERE contact_id = jwt.sub`; foreign IDs return `404`.
+**Authorization:** every journey/ticket/document query scoped `WHERE contact_id = jwt.sub`; foreign IDs return `404`.
 
 **Ticket duplicate guard:** `POST /me/tickets` checks the local mirror for an existing ticket in the same category whose Desk `statusType` isn't `Closed` (derived live from Desk's own Open/On Hold/Closed classification per ticket, not a tenant-maintained status list). If found, returns `409 { existing_ticket }` instead of creating a second one — the app decides whether to show the existing ticket or let the customer force a new one (`force: true` in the body bypasses the guard).
+
+Staff/employee routes (`/staff/users`, `/staff/customers/*`) are documented in §11.5 rather than
+this table — they're a distinct API surface (separate JWT audience, separate data scope), not
+part of the customer-facing contract.
 
 ## 11. Zoho CRM Sync
 
@@ -258,6 +303,46 @@ Scope is deliberately narrow: a customer can open a support ticket and see its s
 - **Contact bridge:** `contacts.desk_contact_id` is resolved lazily, on a customer's first ticket action — search Desk contacts by normalized phone/email first (Desk.search.READ), falling back to a CRM-reference scan only if that finds nothing (Desk has no dedicated search parameter for the CRM back-reference, so that path is a slower full-list scan — kept last on purpose); if none found, create a Desk contact from our contact data and cache the resulting ID. Zoho is never called on a customer's read path (§1's hard rule); ticket creation is the one write-path exception, same footing as the existing CRM webhook-driven writes.
 - **Sync:** tickets fold into the same 15-min incremental + nightly full-reconcile worker as contacts/journeys, scoped to tickets belonging to already-known local contacts.
 - **Instant updates:** a Desk Workflow (Desk's own automation UI, separate from CRM's Workflow Rules) posts to `POST /webhooks/zoho/ticket-updated` on ticket field changes, same secret-validated / fetch-by-ID / diff-before-write pattern as the CRM webhooks.
+
+### 11.5 Staff/Employee Module & Document Uploads
+
+A back-office API surface for Elgris field staff — separate auth, separate data scope, no
+UI in this repo (consumed by a dedicated staff app). Scope: staff upload documents against a
+customer's real Zoho Sales Order as CRM Attachments; the customer tracks and approves/rejects
+them in the main app.
+
+- **Auth:** `staff_users` (email + bcrypt password hash + role, §7) is a wholly separate
+  namespace from `contacts`/OTP auth — `POST /staff/auth/login` (rate-limited per email + per
+  IP, same `checkAndIncr` mechanism as OTP send). Staff JWTs reuse the same RS256 keypair as
+  customer JWTs but carry an explicit `aud: "staff"` claim, checked strictly on verify —
+  cryptographically closes staff routes to a customer token (and vice versa) without any new
+  key management. Revocation mirrors `sessions`/`jti` via `staff_sessions`.
+- **Roles:** `admin` sees every customer; `employee` is scoped to customers whose journey
+  `owner_zoho_id` (Zoho's `Owner.id` lookup field, fetched during sync — §11.1) matches their
+  own `zoho_owner_id`. A resource outside an employee's scope 404s, same "never confirm
+  existence to the wrong caller" rule as customer routes (§10).
+- **Document checklist:** tenant config defines an ordered list of stage-groups, each with a
+  `group_label`, a `requires_approval` flag, and a list of `{key, display_name}` documents
+  (§5). A group's completion status is `COMPLETED` when every one of its documents is
+  `approved` (if `requires_approval`) or `uploaded` (if not) — an empty group is vacuously
+  `COMPLETED`. `documents` rows are created lazily on first upload; `GET` endpoints synthesize
+  `not_uploaded` placeholders for any configured key with no row yet, same sparse-data
+  convention as the rest of the data model.
+- **Upload flow:** staff upload one document at a time (`POST
+  /staff/customers/:contactId/documents/:key/upload`, multipart) — the file is proxied
+  straight through to Zoho as a CRM v8 Attachment on the customer's Sales_Order record
+  (`POST /crm/v8/{journey_module}/{record_id}/Attachments`); only `zoho_attachment_id` +
+  metadata are stored locally, never the file bytes. When staff are ready, one explicit action
+  (`POST /staff/customers/:contactId/documents/submit-for-review`) validates every document in
+  every `requires_approval` group is at least `uploaded`, then flips them all to
+  `submitted_for_review` in one shot and sets `contacts.pending_customer_review = true`. No
+  push on submission — the customer sees it on their next app open (a deliberate v1 choice,
+  not an oversight; push-on-submit is easy to add later, §18).
+- **Customer review:** `GET /me/documents` (§10) shows the same stage-grouped checklist,
+  customer-scoped. `POST /me/documents/:key/respond` — `approved: true` → `approved`;
+  `approved: false` → back to `uploaded` (kicked back to staff, with `review_note` staff can
+  read as "changes requested"). `pending_customer_review` clears once no document remains
+  `submitted_for_review` for that contact.
 
 ## 12. Performance Targets
 
@@ -330,7 +415,8 @@ Scope is deliberately narrow: a customer can open a support ticket and see its s
 |---|---|
 | 1.5 | Ops dashboard; sales one-pager + demo video (Vently Air case-study format) |
 | 2 | Tenant #2: Incksign (DSC journey — Lead module blueprint already exists) or Hearwave (patient journey) |
-| 2 | Stage ETA intelligence (median days/stage from stage_history), documents vault (read-only CRM attachments), WhatsApp deep-link support button |
+| 2 | Stage ETA intelligence (median days/stage from stage_history), WhatsApp deep-link support button |
 | 2+ | Desk ticket threads, replies, and attachments (create + track shipped in current scope, §11.4) |
-| 3 | Document upload, post-completion "My System"-style retention tab |
+| 2+ | Customer document download (upload + track + approve/reject shipped in current scope, §11.5); staff-side UI (own app, not this repo); push notification on submit-for-review |
+| 3 | Post-completion "My System"-style retention tab |
 | Later | Multi-tenant consolidation at 10+ clients; Zoho Marketplace / partner white-label channel |

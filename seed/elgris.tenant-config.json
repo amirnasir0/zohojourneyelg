@@ -143,5 +143,48 @@
       "Closed": "Resolved"
     },
     "response_time_copy": "Our team typically responds within 24 hours."
+  },
+  "documents": {
+    "stage_groups": [
+      {
+        "stage_group_key": "documents_required",
+        "group_label": "Documents Required",
+        "requires_approval": true,
+        "documents": [
+          { "key": "electricity_bill", "display_name": "Electricity Bill" },
+          { "key": "aadhaar_card", "display_name": "Aadhaar Card" },
+          { "key": "pan_card", "display_name": "PAN Card" },
+          { "key": "bank_details", "display_name": "Bank Details / Cancelled Cheque" },
+          { "key": "quotation_copy", "display_name": "Quotation Copy" }
+        ]
+      },
+      {
+        "stage_group_key": "sales_order_draft",
+        "group_label": "Sales Order Draft",
+        "requires_approval": true,
+        "documents": [{ "key": "draft_sales_order", "display_name": "Draft Sales Order" }]
+      },
+      {
+        "stage_group_key": "agreement_bond_uploaded",
+        "group_label": "Agreement/Bond Uploaded",
+        "requires_approval": true,
+        "documents": [{ "key": "agreement_copy", "display_name": "Agreement Copy" }]
+      },
+      {
+        "stage_group_key": "loan_sanction_disbursement",
+        "group_label": "Loan Sanction & Disbursement",
+        "requires_approval": true,
+        "documents": [
+          { "key": "bank_sanction_letter", "display_name": "Bank Sanction Letter" },
+          { "key": "loan_disbursement_proof", "display_name": "Loan Disbursement Proof" }
+        ]
+      },
+      {
+        "stage_group_key": "material_dispatched",
+        "group_label": "Material Dispatched",
+        "requires_approval": false,
+        "documents": []
+      }
+    ]
   }
 }

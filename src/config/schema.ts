@@ -143,6 +143,30 @@ const deskSchema = z.object({
   response_time_copy: z.string().min(1),
 });
 
+const documentDefSchema = z.object({
+  key: z.string().min(1),
+  display_name: z.string().min(1),
+});
+
+// A stage-group's completion rule (src/lib/document-view.ts): a group with
+// requires_approval: true is COMPLETED only once every one of its documents
+// reaches APPROVED; otherwise UPLOADED is enough. This is a genuine
+// per-group tenant choice, not hardcoded — Elgris's staff workflow is
+// "upload everything, then hit one Submit for review button," which is why
+// its non-empty groups are all seeded requires_approval: true, but a future
+// tenant (or a future Elgris group) may want some document types to
+// auto-complete on upload with no customer review step at all.
+const documentStageGroupSchema = z.object({
+  stage_group_key: z.string().min(1),
+  group_label: z.string().min(1),
+  requires_approval: z.boolean(),
+  documents: z.array(documentDefSchema),
+});
+
+const documentsConfigSchema = z.object({
+  stage_groups: z.array(documentStageGroupSchema).min(1),
+});
+
 export const tenantConfigSchema = z.object({
   tenant: tenantSchema,
   zoho: zohoSchema,
@@ -151,4 +175,5 @@ export const tenantConfigSchema = z.object({
   notifications: notificationsSchema,
   webhooks: webhooksSchema,
   desk: deskSchema,
+  documents: documentsConfigSchema,
 });
