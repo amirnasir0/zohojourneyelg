@@ -6,10 +6,14 @@ import { getCachedDocuments, invalidateDocumentsCache, setCachedDocuments } from
 import { sendWithEtag } from '../lib/http-cache.js';
 import { prisma } from '../lib/prisma.js';
 
-const respondBodySchema = z.object({
-  approved: z.boolean(),
-  note: z.string().min(1).optional(),
-});
+const respondBodySchema = z
+  .object({
+    approved: z.boolean(),
+    note: z.string().min(1).optional(),
+  })
+  // Approving needs no note; rejecting must always carry a reason the
+  // staff member can act on — per explicit product decision.
+  .refine((data) => data.approved || !!data.note, { message: 'note is required when rejecting', path: ['note'] });
 
 export async function registerDocumentRoutes(app: FastifyInstance) {
   app.get('/me/documents', { preHandler: requireAuth }, async (req, reply) => {
@@ -39,14 +43,14 @@ export async function registerDocumentRoutes(app: FastifyInstance) {
       return reply.code(409).send({ error: 'NOT_SUBMITTED_FOR_REVIEW' });
     }
 
-    // Rejecting doesn't persist DocumentStatus.REJECTED — it kicks the
-    // document straight back to UPLOADED (staff re-uploads over the same
-    // key), with the review note as the record of why. Per explicit product
-    // decision (see M9 plan): approve -> APPROVED, reject -> UPLOADED.
+    // Rejection persists DocumentStatus.REJECTED (not UPLOADED) with the
+    // required review note — staff see it as a distinct, actionable state
+    // in their document list and must re-upload before it can be
+    // resubmitted (see submit-for-review's missing-documents check).
     const updated = await prisma.document.update({
       where: { id: documentRow.id },
       data: {
-        status: parsed.data.approved ? 'APPROVED' : 'UPLOADED',
+        status: parsed.data.approved ? 'APPROVED' : 'REJECTED',
         reviewedAt: new Date(),
         ...(parsed.data.note !== undefined ? { reviewNote: parsed.data.note } : {}),
       },

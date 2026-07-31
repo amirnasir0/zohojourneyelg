@@ -263,7 +263,10 @@ model Session {
 model DeviceToken {
   id         String   @id @default(uuid())
   contactId  String   @map("contact_id")
-  token      String
+  // Unique so re-registering the same physical device (relaunch, re-login,
+  // reinstall) upserts in place instead of accumulating duplicate rows that
+  // would each receive their own copy of every push.
+  token      String   @unique
   platform   String
   createdAt  DateTime @default(now()) @map("created_at")
 

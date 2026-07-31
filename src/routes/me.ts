@@ -1,10 +1,16 @@
 import type { FastifyInstance } from 'fastify';
+import { z } from 'zod';
 import { requireAuth } from '../lib/auth-middleware.js';
 import { sendWithEtag } from '../lib/http-cache.js';
 import { buildJourneySummary, buildStageTimeline, type JourneySummary } from '../lib/journey-view.js';
 import { getCachedJourneys, setCachedJourneys } from '../lib/journeys-cache.js';
 import { prisma } from '../lib/prisma.js';
 import { extractCreatedTime, isDateDrivenJourney, resolveDateDrivenStage } from '../sync/date-stage-resolve.js';
+
+const deviceTokenBodySchema = z.object({
+  token: z.string().min(1),
+  platform: z.enum(['ios', 'android']),
+});
 
 export async function registerMeRoutes(app: FastifyInstance) {
   app.get('/me', { preHandler: requireAuth }, async (req, reply) => {
@@ -70,5 +76,24 @@ export async function registerMeRoutes(app: FastifyInstance) {
     // journey-progress position to show a timeline against.
 
     return sendWithEtag(req, reply, payload, 'private, no-cache');
+  });
+
+  // Upserts by the unique token column — the same physical device
+  // re-registering (relaunch, re-login, reinstall) re-points contactId
+  // in place instead of accumulating duplicate rows that would each get
+  // their own copy of every push.
+  app.post('/me/device-token', { preHandler: requireAuth }, async (req, reply) => {
+    const parsed = deviceTokenBodySchema.safeParse(req.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'INVALID_REQUEST' });
+    }
+
+    await prisma.deviceToken.upsert({
+      where: { token: parsed.data.token },
+      create: { contactId: req.contactId, token: parsed.data.token, platform: parsed.data.platform },
+      update: { contactId: req.contactId, platform: parsed.data.platform },
+    });
+
+    return reply.code(200).send({ success: true });
   });
 }

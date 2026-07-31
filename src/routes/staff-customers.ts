@@ -4,6 +4,7 @@ import type { TenantConfig } from '../config/types.js';
 import { buildDocumentChecklist } from '../lib/document-view.js';
 import { invalidateDocumentsCache } from '../lib/documents-cache.js';
 import { prisma } from '../lib/prisma.js';
+import { sendPushToContact } from '../lib/push-notifications.js';
 import { requireStaffAuth } from '../lib/staff-auth-middleware.js';
 
 type ContactWithJourneys = Contact & { journeys: Journey[] };
@@ -243,9 +244,16 @@ export async function registerStaffCustomerRoutes(app: FastifyInstance) {
     const rows = await prisma.document.findMany({ where: { contactId: contact.id } });
     const checklist = buildDocumentChecklist(app.tenantConfig, rows, false);
 
+    // REJECTED blocks resubmission the same as NOT_UPLOADED — a document
+    // the customer sent back must be re-uploaded (which resets it to
+    // UPLOADED) before the batch can go back for review.
     const missing = checklist
       .filter((group) => group.requires_approval)
-      .flatMap((group) => group.documents.filter((d) => d.status === 'NOT_UPLOADED').map((d) => ({ key: d.key, display_name: d.display_name })));
+      .flatMap((group) =>
+        group.documents
+          .filter((d) => d.status === 'NOT_UPLOADED' || d.status === 'REJECTED')
+          .map((d) => ({ key: d.key, display_name: d.display_name })),
+      );
 
     if (missing.length > 0) {
       return reply.code(400).send({ error: 'MISSING_DOCUMENTS', missing });
@@ -260,6 +268,13 @@ export async function registerStaffCustomerRoutes(app: FastifyInstance) {
     ]);
 
     await invalidateDocumentsCache(contact.id);
+
+    // Best-effort — sendPushToContact never throws, so a push failure
+    // (no registered device, Expo API hiccup) never turns a successful
+    // submit-for-review into an error response.
+    void sendPushToContact(contact.id, 'Documents ready for review', 'Please review and approve your submitted documents.', {
+      screen: 'documents',
+    });
 
     return reply.code(200).send({ success: true });
   });
