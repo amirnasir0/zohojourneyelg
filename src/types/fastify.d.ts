@@ -18,5 +18,7 @@ declare module 'fastify' {
   }
   interface FastifyRequest {
     contactId: string;
+    staffId: string;
+    staffRole: string;
   }
 }

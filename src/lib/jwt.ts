@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { type CryptoKey, SignJWT, importPKCS8, importSPKI, jwtVerify } from 'jose';
 
-const JWT_ALG = 'RS256';
+export const JWT_ALG = 'RS256';
 const JWT_TTL_SECONDS = 90 * 24 * 60 * 60;
 
 let privateKeyPromise: Promise<CryptoKey> | null = null;
@@ -31,7 +31,11 @@ function readPem(envVarName: string, pathEnvVarName: string): string {
   return readFileSync(requireEnv(pathEnvVarName), 'utf-8');
 }
 
-function getPrivateKey(): Promise<CryptoKey> {
+// Exported for src/lib/staff-jwt.ts: staff tokens reuse this exact same
+// RS256 keypair (no new key generation/Railway env vars to manage) — the
+// audience claim, not a separate key, is what keeps staff and customer
+// tokens from being interchangeable. See staff-jwt.ts for the aud check.
+export function getPrivateKey(): Promise<CryptoKey> {
   if (!privateKeyPromise) {
     const pem = readPem('JWT_PRIVATE_KEY', 'JWT_PRIVATE_KEY_PATH');
     privateKeyPromise = importPKCS8(pem, JWT_ALG);
@@ -39,7 +43,7 @@ function getPrivateKey(): Promise<CryptoKey> {
   return privateKeyPromise;
 }
 
-function getPublicKey(): Promise<CryptoKey> {
+export function getPublicKey(): Promise<CryptoKey> {
   if (!publicKeyPromise) {
     const pem = readPem('JWT_PUBLIC_KEY', 'JWT_PUBLIC_KEY_PATH');
     publicKeyPromise = importSPKI(pem, JWT_ALG);
