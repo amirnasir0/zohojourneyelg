@@ -15,6 +15,7 @@
     "prisma:migrate": "prisma migrate dev",
     "generate:jwt-keys": "tsx src/scripts/generate-jwt-keys.ts",
     "seed:staff-admin": "tsx src/scripts/seed-staff-admin.ts",
+    "backfill:document-versions": "tsx src/scripts/backfill-document-versions.ts",
     "zoho:authorize": "tsx src/scripts/zoho-authorize.ts",
     "sync:once": "tsx src/scripts/sync-once.ts",
     "sync:reconcile": "tsx src/scripts/reconcile-once.ts",

@@ -61,13 +61,18 @@ function extensionOf(filename: string): string {
 // The Zoho attachment name is constructed server-side rather than trusting
 // the client-supplied filename — staff/CRM users looking at a Sales Order's
 // attachment list should be able to tell what a document is and whose it is
-// at a glance ("Electricity Bill - Rekha Gaikwad.pdf"), not "IMG_4821.pdf".
-// The original client filename is still kept as-is in the Document row's
-// file_name column, for the app's own display purposes.
-function buildAttachmentFilename(displayName: string, contactFullName: string | null, clientFilename: string): string {
+// at a glance ("Electricity Bill - Rekha Gaikwad (v1).pdf"), not "IMG_4821.pdf".
+// The version number is always included, even for the first upload, so
+// every attachment for a given document_key follows one consistent pattern
+// rather than "no marker" silently meaning "there's only one." The original
+// client filename is still kept as-is in the Document row's file_name
+// column, for the app's own display purposes. A re-upload never overwrites
+// or deletes a prior version in Zoho — see DocumentVersion.
+function buildAttachmentFilename(displayName: string, contactFullName: string | null, clientFilename: string, versionNumber: number): string {
   const ext = extensionOf(clientFilename);
   const namePart = sanitizeFilenamePart(`${displayName} - ${contactFullName ?? 'Customer'}`).slice(0, MAX_ATTACHMENT_NAME_LENGTH) || 'document';
-  return ext ? `${namePart}.${ext}` : namePart;
+  const versioned = `${namePart} (v${versionNumber})`;
+  return ext ? `${versioned}.${ext}` : versioned;
 }
 
 export async function registerStaffCustomerRoutes(app: FastifyInstance) {
@@ -160,7 +165,17 @@ export async function registerStaffCustomerRoutes(app: FastifyInstance) {
       return reply.code(400).send({ error: 'MISSING_FILE' });
     }
     const buffer = await filePart.toBuffer();
-    const attachmentFilename = buildAttachmentFilename(documentDef.displayName, contact.fullName, filePart.filename);
+
+    // A re-upload never overwrites or deletes the previous version in
+    // Zoho — each upload lands as its own distinctly-numbered attachment,
+    // with the full history preserved in DocumentVersion. The Document row
+    // itself still just holds "current" state (unchanged by this).
+    const existingDocument = await prisma.document.findUnique({
+      where: { contactId_documentKey: { contactId: contact.id, documentKey: key } },
+    });
+    const nextVersionNumber = existingDocument ? (await prisma.documentVersion.count({ where: { documentId: existingDocument.id } })) + 1 : 1;
+
+    const attachmentFilename = buildAttachmentFilename(documentDef.displayName, contact.fullName, filePart.filename, nextVersionNumber);
 
     const uploaded = await app.zohoClient.uploadAttachment(app.tenantConfig.zoho.journey_module, targetJourney.zohoRecordId, {
       buffer,
@@ -192,6 +207,18 @@ export async function registerStaffCustomerRoutes(app: FastifyInstance) {
         uploadedAt: new Date(),
         reviewedAt: null,
         reviewNote: null,
+      },
+    });
+
+    await prisma.documentVersion.create({
+      data: {
+        documentId: documentRow.id,
+        versionNumber: nextVersionNumber,
+        fileName: filePart.filename,
+        fileSize: buffer.length,
+        zohoAttachmentId: uploaded.id,
+        uploadedById: req.staffId,
+        uploadedAt: documentRow.uploadedAt ?? new Date(),
       },
     });
 

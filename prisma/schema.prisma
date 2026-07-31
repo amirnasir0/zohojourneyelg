@@ -157,8 +157,9 @@ model StaffUser {
   active       Boolean   @default(true)
   createdAt    DateTime  @default(now()) @map("created_at")
 
-  sessions          StaffSession[]
-  uploadedDocuments Document[] @relation("DocumentUploadedBy")
+  sessions                 StaffSession[]
+  uploadedDocuments        Document[]        @relation("DocumentUploadedBy")
+  uploadedDocumentVersions DocumentVersion[] @relation("DocumentVersionUploadedBy")
 
   @@map("staff_users")
 }
@@ -200,13 +201,40 @@ model Document {
   reviewedAt       DateTime?      @map("reviewed_at")
   reviewNote       String?        @map("review_note")
 
-  contact    Contact    @relation(fields: [contactId], references: [id], onDelete: Cascade)
-  journey    Journey?   @relation(fields: [journeyId], references: [id], onDelete: SetNull)
-  uploadedBy StaffUser? @relation("DocumentUploadedBy", fields: [uploadedById], references: [id], onDelete: SetNull)
+  contact    Contact           @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  journey    Journey?          @relation(fields: [journeyId], references: [id], onDelete: SetNull)
+  uploadedBy StaffUser?        @relation("DocumentUploadedBy", fields: [uploadedById], references: [id], onDelete: SetNull)
+  versions   DocumentVersion[]
 
   @@unique([contactId, documentKey])
   @@index([contactId])
   @@map("documents")
+}
+
+// Append-only upload history per Document — mirrors StageHistory's
+// relationship to Journey (Document holds "current" state, mutated in
+// place on every re-upload, exactly as before; DocumentVersion is the full
+// audit trail). Nothing in the approval workflow (document-view.ts,
+// submit-for-review, customer respond) reads this table — it exists purely
+// so a re-upload to the same document_key never silently discards the
+// previous file, since each version lands in Zoho as its own distinctly
+// -named attachment (see buildAttachmentFilename in staff-customers.ts).
+model DocumentVersion {
+  id               String   @id @default(uuid())
+  documentId       String   @map("document_id")
+  versionNumber    Int      @map("version_number")
+  fileName         String   @map("file_name")
+  fileSize         Int      @map("file_size")
+  zohoAttachmentId String   @map("zoho_attachment_id")
+  uploadedById     String?  @map("uploaded_by")
+  uploadedAt       DateTime @map("uploaded_at")
+
+  document   Document   @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  uploadedBy StaffUser? @relation("DocumentVersionUploadedBy", fields: [uploadedById], references: [id], onDelete: SetNull)
+
+  @@unique([documentId, versionNumber])
+  @@index([documentId])
+  @@map("document_versions")
 }
 
 model OtpAttempt {

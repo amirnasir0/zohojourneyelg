@@ -10,7 +10,8 @@ vi.mock('../src/lib/prisma.js', () => ({
   prisma: {
     staffSession: { findUnique: vi.fn() },
     contact: { findMany: vi.fn(), findUnique: vi.fn(), update: vi.fn() },
-    document: { findMany: vi.fn(), upsert: vi.fn(), updateMany: vi.fn() },
+    document: { findMany: vi.fn(), findUnique: vi.fn(), upsert: vi.fn(), updateMany: vi.fn() },
+    documentVersion: { count: vi.fn(), create: vi.fn() },
     $transaction: vi.fn(),
   },
 }));
@@ -133,6 +134,10 @@ beforeEach(async () => {
   vi.clearAllMocks();
   await redisMock.flushall();
   vi.mocked(prisma.$transaction).mockImplementation((ops: unknown) => Promise.all(ops as never[]) as never);
+  // Default: no prior Document row for this (contact, key) — first upload, version 1.
+  vi.mocked(prisma.document.findUnique).mockResolvedValue(null);
+  vi.mocked(prisma.documentVersion.count).mockResolvedValue(0);
+  vi.mocked(prisma.documentVersion.create).mockResolvedValue({} as never);
 });
 
 describe('GET /staff/customers — role scoping', () => {
@@ -232,18 +237,22 @@ describe('POST /staff/customers/:contactId/documents/:key/upload', () => {
 
     expect(res.statusCode).toBe(200);
     // The Zoho attachment name is server-constructed from the document's
-    // configured display_name + the contact's name, not the client's raw
-    // filename — the client filename is only kept in the Document row.
+    // configured display_name + the contact's name (+ version), not the
+    // client's raw filename — the client filename is only kept in the
+    // Document row.
     expect(zohoClient.uploadAttachment).toHaveBeenCalledWith(
       'Sales_Orders',
       'so1',
-      expect.objectContaining({ filename: 'Aadhaar Card - Ganesh Kumar.pdf' }),
+      expect.objectContaining({ filename: 'Aadhaar Card - Ganesh Kumar (v1).pdf' }),
     );
     expect(prisma.document.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { contactId_documentKey: { contactId: 'c1', documentKey: 'aadhaar_card' } },
         create: expect.objectContaining({ zohoAttachmentId: 'zoho-att-1', status: 'UPLOADED', uploadedById: 'emp-1', fileName: 'aadhaar.pdf' }),
       }),
+    );
+    expect(prisma.documentVersion.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ versionNumber: 1, zohoAttachmentId: 'zoho-att-1', fileName: 'aadhaar.pdf' }) }),
     );
   });
 
@@ -267,8 +276,40 @@ describe('POST /staff/customers/:contactId/documents/:key/upload', () => {
     expect(zohoClient.uploadAttachment).toHaveBeenCalledWith(
       'Sales_Orders',
       'so1',
-      expect.objectContaining({ filename: 'Aadhaar Card - Somanath Lavagi script.pdf' }),
+      expect.objectContaining({ filename: 'Aadhaar Card - Somanath Lavagi script (v1).pdf' }),
     );
+  });
+
+  it('re-uploading the same key keeps the prior version — new attachment, versioned filename, no delete', async () => {
+    mockAuthAs('emp-1', 'EMPLOYEE', 'owner-1');
+    vi.mocked(prisma.contact.findUnique).mockResolvedValue(contactOwnedByOwner1 as never);
+    // A Document row already exists for this key (from a prior upload), with 1 version recorded so far.
+    vi.mocked(prisma.document.findUnique).mockResolvedValue({ id: 'doc-1', documentKey: 'aadhaar_card' } as never);
+    vi.mocked(prisma.documentVersion.count).mockResolvedValue(1);
+    vi.mocked(zohoClient.uploadAttachment).mockResolvedValue({ id: 'zoho-att-2' });
+    vi.mocked(prisma.document.upsert).mockResolvedValue({ id: 'doc-1', uploadedAt: new Date() } as never);
+
+    const app = await buildApp();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/staff/customers/c1/documents/aadhaar_card/upload',
+      headers: authHeader,
+      payload: uploadForm('aadhaar-retake.pdf'),
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(prisma.documentVersion.count).toHaveBeenCalledWith({ where: { documentId: 'doc-1' } });
+    expect(zohoClient.uploadAttachment).toHaveBeenCalledWith(
+      'Sales_Orders',
+      'so1',
+      expect.objectContaining({ filename: 'Aadhaar Card - Ganesh Kumar (v2).pdf' }),
+    );
+    expect(prisma.documentVersion.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ documentId: 'doc-1', versionNumber: 2, zohoAttachmentId: 'zoho-att-2' }) }),
+    );
+    // No delete/cleanup call of any kind on the prior Zoho attachment — the
+    // first version stays live in Zoho.
+    expect(Object.keys(zohoClient)).not.toContain('deleteAttachment');
   });
 
   it('rejects an unconfigured document key with 400', async () => {
