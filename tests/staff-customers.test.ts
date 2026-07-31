@@ -231,12 +231,43 @@ describe('POST /staff/customers/:contactId/documents/:key/upload', () => {
     });
 
     expect(res.statusCode).toBe(200);
-    expect(zohoClient.uploadAttachment).toHaveBeenCalledWith('Sales_Orders', 'so1', expect.objectContaining({ filename: 'aadhaar.pdf' }));
+    // The Zoho attachment name is server-constructed from the document's
+    // configured display_name + the contact's name, not the client's raw
+    // filename — the client filename is only kept in the Document row.
+    expect(zohoClient.uploadAttachment).toHaveBeenCalledWith(
+      'Sales_Orders',
+      'so1',
+      expect.objectContaining({ filename: 'Aadhaar Card - Ganesh Kumar.pdf' }),
+    );
     expect(prisma.document.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { contactId_documentKey: { contactId: 'c1', documentKey: 'aadhaar_card' } },
-        create: expect.objectContaining({ zohoAttachmentId: 'zoho-att-1', status: 'UPLOADED', uploadedById: 'emp-1' }),
+        create: expect.objectContaining({ zohoAttachmentId: 'zoho-att-1', status: 'UPLOADED', uploadedById: 'emp-1', fileName: 'aadhaar.pdf' }),
       }),
+    );
+  });
+
+  it('sanitizes special characters out of the constructed Zoho attachment name', async () => {
+    mockAuthAs('emp-1', 'EMPLOYEE', 'owner-1');
+    vi.mocked(prisma.contact.findUnique).mockResolvedValue({
+      ...contactOwnedByOwner1,
+      fullName: '"Somanath / Lavagi" <script>💥',
+    } as never);
+    vi.mocked(zohoClient.uploadAttachment).mockResolvedValue({ id: 'zoho-att-3' });
+    vi.mocked(prisma.document.upsert).mockResolvedValue({} as never);
+
+    const app = await buildApp();
+    await app.inject({
+      method: 'POST',
+      url: '/staff/customers/c1/documents/aadhaar_card/upload',
+      headers: authHeader,
+      payload: uploadForm('weird name!!.PDF'),
+    });
+
+    expect(zohoClient.uploadAttachment).toHaveBeenCalledWith(
+      'Sales_Orders',
+      'so1',
+      expect.objectContaining({ filename: 'Aadhaar Card - Somanath Lavagi script.pdf' }),
     );
   });
 

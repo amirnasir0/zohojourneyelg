@@ -31,13 +31,43 @@ function serializeCustomerSummary(contact: Contact) {
   };
 }
 
-function findDocumentDef(tenantConfig: TenantConfig, key: string): { stageGroupKey: string; requiresApproval: boolean } | undefined {
+function findDocumentDef(
+  tenantConfig: TenantConfig,
+  key: string,
+): { stageGroupKey: string; requiresApproval: boolean; displayName: string } | undefined {
   for (const group of tenantConfig.documents.stage_groups) {
-    if (group.documents.some((d) => d.key === key)) {
-      return { stageGroupKey: group.stage_group_key, requiresApproval: group.requires_approval };
+    const doc = group.documents.find((d) => d.key === key);
+    if (doc) {
+      return { stageGroupKey: group.stage_group_key, requiresApproval: group.requires_approval, displayName: doc.display_name };
     }
   }
   return undefined;
+}
+
+const MAX_ATTACHMENT_NAME_LENGTH = 150;
+
+function sanitizeFilenamePart(raw: string): string {
+  return raw
+    .replace(/[^A-Za-z0-9 ._-]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function extensionOf(filename: string): string {
+  const match = /\.([A-Za-z0-9]+)$/.exec(filename);
+  return match?.[1] ? match[1].toLowerCase() : '';
+}
+
+// The Zoho attachment name is constructed server-side rather than trusting
+// the client-supplied filename — staff/CRM users looking at a Sales Order's
+// attachment list should be able to tell what a document is and whose it is
+// at a glance ("Electricity Bill - Rekha Gaikwad.pdf"), not "IMG_4821.pdf".
+// The original client filename is still kept as-is in the Document row's
+// file_name column, for the app's own display purposes.
+function buildAttachmentFilename(displayName: string, contactFullName: string | null, clientFilename: string): string {
+  const ext = extensionOf(clientFilename);
+  const namePart = sanitizeFilenamePart(`${displayName} - ${contactFullName ?? 'Customer'}`).slice(0, MAX_ATTACHMENT_NAME_LENGTH) || 'document';
+  return ext ? `${namePart}.${ext}` : namePart;
 }
 
 export async function registerStaffCustomerRoutes(app: FastifyInstance) {
@@ -130,10 +160,11 @@ export async function registerStaffCustomerRoutes(app: FastifyInstance) {
       return reply.code(400).send({ error: 'MISSING_FILE' });
     }
     const buffer = await filePart.toBuffer();
+    const attachmentFilename = buildAttachmentFilename(documentDef.displayName, contact.fullName, filePart.filename);
 
     const uploaded = await app.zohoClient.uploadAttachment(app.tenantConfig.zoho.journey_module, targetJourney.zohoRecordId, {
       buffer,
-      filename: filePart.filename,
+      filename: attachmentFilename,
       contentType: filePart.mimetype,
     });
 
