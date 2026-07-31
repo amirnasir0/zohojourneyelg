@@ -3,9 +3,11 @@ import type { FastifyInstance } from 'fastify';
 import type { TenantConfig } from '../config/types.js';
 import { buildDocumentChecklist } from '../lib/document-view.js';
 import { invalidateDocumentsCache } from '../lib/documents-cache.js';
+import { buildJourneySummary, buildStageTimeline } from '../lib/journey-view.js';
 import { prisma } from '../lib/prisma.js';
 import { sendPushToContact } from '../lib/push-notifications.js';
 import { requireStaffAuth } from '../lib/staff-auth-middleware.js';
+import { extractCreatedTime, isDateDrivenJourney, resolveDateDrivenStage } from '../sync/date-stage-resolve.js';
 
 type ContactWithJourneys = Contact & { journeys: Journey[] };
 
@@ -114,6 +116,59 @@ export async function registerStaffCustomerRoutes(app: FastifyInstance) {
     }
 
     return reply.code(200).send(serializeCustomerSummary(contact));
+  });
+
+  // Staff-scoped equivalent of GET /me/journeys/:id — same helpers, same
+  // date-driven/stage-history branching, just resolved against whichever
+  // journey this contact has instead of one the caller already owns.
+  app.get('/staff/customers/:contactId/journey', { preHandler: requireStaffAuth }, async (req, reply) => {
+    const { contactId } = req.params as { contactId: string };
+    const contact = await prisma.contact.findUnique({ where: { id: contactId }, include: { journeys: true } });
+    if (!contact || !contactInScope(contact, req.staffRole, req.staffZohoOwnerId)) {
+      return reply.code(404).send({ error: 'NOT_FOUND' });
+    }
+
+    if (contact.journeys.length === 0) {
+      return reply.code(200).send({ has_journey: false });
+    }
+
+    let targetJourney = contact.journeys[0]!;
+    if (contact.journeys.length > 1) {
+      // Same ambiguity/resolution as the upload route — most-recently-synced
+      // journey is the best guess for "the Sales Order currently active."
+      targetJourney = [...contact.journeys].sort((a, b) => b.syncedAt.getTime() - a.syncedAt.getTime())[0]!;
+      req.log.warn(
+        { contactId: contact.id, journeyCount: contact.journeys.length, chosenJourneyId: targetJourney.id },
+        '[staff-customers] contact has multiple journeys — showing the most recently synced one',
+      );
+    }
+
+    const summary = buildJourneySummary(targetJourney, app.tenantConfig);
+    if (!summary) {
+      // "hidden"-type stage — same treatment as a nonexistent journey.
+      return reply.code(200).send({ has_journey: false });
+    }
+
+    let stageTimeline: unknown[] = [];
+    if (summary.status === 'in_progress') {
+      if (isDateDrivenJourney(app.tenantConfig.journey.stages)) {
+        const refValues = (targetJourney.refValues ?? {}) as Record<string, unknown>;
+        const createdTime = extractCreatedTime(targetJourney.raw);
+        stageTimeline = resolveDateDrivenStage(app.tenantConfig.journey.stages, refValues, createdTime).timeline;
+      } else {
+        const stageHistoryRows = await prisma.stageHistory.findMany({ where: { journeyId: targetJourney.id } });
+        const changedAtByStage = new Map(stageHistoryRows.map((r) => [r.toStage, r.changedAt]));
+        stageTimeline = buildStageTimeline(app.tenantConfig.journey.stages, summary.stage_index, changedAtByStage);
+      }
+    }
+
+    return reply.code(200).send({
+      has_journey: true,
+      journey_name: summary.name,
+      stage_index: summary.stage_index,
+      total_stages: summary.total_stages,
+      stage_timeline: stageTimeline,
+    });
   });
 
   app.get('/staff/customers/:contactId/documents', { preHandler: requireStaffAuth }, async (req, reply) => {
