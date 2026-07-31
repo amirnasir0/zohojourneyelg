@@ -15,9 +15,10 @@ vi.mock('../src/lib/prisma.js', () => ({
   },
 }));
 
-vi.mock('../src/sync/journey-batch.js', () => ({
-  writeJourneyBatch: vi.fn(),
-}));
+vi.mock('../src/sync/journey-batch.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/sync/journey-batch.js')>();
+  return { ...actual, writeJourneyBatch: vi.fn() };
+});
 
 const { prisma } = await import('../src/lib/prisma.js');
 const { writeJourneyBatch } = await import('../src/sync/journey-batch.js');
@@ -94,6 +95,7 @@ const zohoClient = {
   getRecordsPage: vi.fn(),
   getRecord: vi.fn(),
   getModuleFields: vi.fn(),
+  uploadAttachment: vi.fn(),
 };
 
 async function buildApp() {

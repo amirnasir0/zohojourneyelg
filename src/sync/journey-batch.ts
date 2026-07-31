@@ -21,6 +21,7 @@ export interface JourneyUpsertItem {
   stage: string;
   stageIndex: number | null;
   refValues: Record<string, unknown>;
+  ownerZohoId: string | null;
   raw: ZohoRecord;
 }
 
@@ -31,6 +32,15 @@ export interface JourneyBatchPlan {
 
 interface ZohoLookup {
   id?: string;
+}
+
+// Standard CRM v8 lookup field shape ({id, name, email}) — same read
+// pattern as journey_contact_lookup_field, just for the "Owner" field
+// specifically. Exported for reuse by salesorder-updated.ts, which updates
+// an existing journey row on a different code path than writeJourneyBatch.
+export function extractOwnerZohoId(raw: ZohoRecord): string | null {
+  const owner = raw.Owner as ZohoLookup | null | undefined;
+  return owner?.id ?? null;
 }
 
 /**
@@ -86,7 +96,7 @@ export function planJourneyBatch(
     const nameRaw = raw[tenantConfig.zoho.journey_name_field];
     const name = typeof nameRaw === 'string' ? nameRaw : '';
 
-    upserts.push({ zohoRecordId, contactId, name, stage: stageValue ?? '', stageIndex, refValues, raw });
+    upserts.push({ zohoRecordId, contactId, name, stage: stageValue ?? '', stageIndex, refValues, ownerZohoId: extractOwnerZohoId(raw), raw });
   }
 
   return { upserts, issues };
@@ -144,6 +154,7 @@ export async function writeJourneyBatch(
           stage: item.stage,
           stageIndex: item.stageIndex,
           refValues: item.refValues as Prisma.InputJsonValue,
+          ownerZohoId: item.ownerZohoId,
           raw: item.raw as Prisma.InputJsonValue,
           syncedAt: new Date(),
         },
@@ -153,6 +164,7 @@ export async function writeJourneyBatch(
           stage: item.stage,
           stageIndex: item.stageIndex,
           refValues: item.refValues as Prisma.InputJsonValue,
+          ownerZohoId: item.ownerZohoId,
           raw: item.raw as Prisma.InputJsonValue,
           syncedAt: new Date(),
         },

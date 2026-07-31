@@ -81,6 +81,7 @@ describe('planJourneyBatch', () => {
         stage: 'Site Survey',
         stageIndex: 1,
         refValues: { National_Portal_No: 'NP-1' },
+        ownerZohoId: null,
         raw: { id: 'd1', Stage: 'Site Survey', Deal_Name: 'Deal 1', Contact_Name: { id: 'zc1' }, National_Portal_No: 'NP-1' },
       },
     ]);

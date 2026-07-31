@@ -36,10 +36,19 @@ export interface ZohoPageResult {
   moreRecords: boolean;
 }
 
+export interface ZohoAttachmentUploadResult {
+  id: string;
+}
+
 export interface ZohoClient {
   getRecordsPage(module: string, opts: { fields: string[]; sinceIso?: string | undefined; pageToken?: string | undefined }): Promise<ZohoPageResult>;
   getRecord(module: string, id: string, fields: string[]): Promise<ZohoRecord | null>;
   getModuleFields(module: string): Promise<ZohoField[]>;
+  // CRM v8 Attachments API — POST /crm/v8/{module}/{record_id}/Attachments,
+  // multipart/form-data with a `file` field (confirmed live). The current
+  // ZOHO_REFRESH_TOKEN's granted scope (ZohoCRM.modules.ALL
+  // ZohoCRM.settings.ALL) already covers this — no new Zoho consent needed.
+  uploadAttachment(module: string, recordId: string, file: { buffer: Buffer; filename: string; contentType: string }): Promise<ZohoAttachmentUploadResult>;
 }
 
 const PAGE_SIZE = 200;
@@ -103,7 +112,7 @@ class ZohoApiClient implements ZohoClient {
 
   private async request(
     path: string,
-    opts: { headers?: Record<string, string> } = {},
+    opts: { method?: string; body?: FormData; headers?: Record<string, string> } = {},
     retriedAuth = false,
     retries429 = 0,
   ): Promise<Response> {
@@ -113,6 +122,11 @@ class ZohoApiClient implements ZohoClient {
     const res = await fetchWithNetworkRetry(
       url,
       {
+        method: opts.method ?? 'GET',
+        // No Content-Type set here even when opts.body is FormData — fetch
+        // computes the correct `multipart/form-data; boundary=...` value
+        // itself; setting it manually breaks the boundary.
+        ...(opts.body ? { body: opts.body } : {}),
         headers: {
           Authorization: `Zoho-oauthtoken ${token}`,
           ...opts.headers,
@@ -202,6 +216,30 @@ class ZohoApiClient implements ZohoClient {
 
     const data = (await res.json()) as { data?: ZohoRecord[] };
     return data.data?.[0] ?? null;
+  }
+
+  async uploadAttachment(
+    module: string,
+    recordId: string,
+    file: { buffer: Buffer; filename: string; contentType: string },
+  ): Promise<ZohoAttachmentUploadResult> {
+    const formData = new FormData();
+    formData.append('file', new Blob([file.buffer], { type: file.contentType }), file.filename);
+
+    const res = await this.request(`/crm/v8/${module}/${encodeURIComponent(recordId)}/Attachments`, { method: 'POST', body: formData });
+
+    if (!res.ok) {
+      const body = await res.text().catch(() => '<unreadable body>');
+      throw new Error(`Zoho uploadAttachment failed: module=${module} recordId=${recordId} status=${res.status} body=${body}`);
+    }
+
+    const data = (await res.json()) as { data?: Array<{ status?: string; details?: { id?: string } }> };
+    const result = data.data?.[0];
+    if (result?.status !== 'success' || !result.details?.id) {
+      throw new Error(`Zoho uploadAttachment did not report success: module=${module} recordId=${recordId} body=${JSON.stringify(data)}`);
+    }
+
+    return { id: result.details.id };
   }
 
   async getModuleFields(module: string): Promise<ZohoField[]> {

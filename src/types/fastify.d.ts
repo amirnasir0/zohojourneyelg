@@ -20,5 +20,6 @@ declare module 'fastify' {
     contactId: string;
     staffId: string;
     staffRole: string;
+    staffZohoOwnerId: string | null;
   }
 }

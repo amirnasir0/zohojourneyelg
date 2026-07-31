@@ -46,6 +46,10 @@ export async function runFullReconcile(zohoClient: ZohoClient, tenantConfig: Ten
       // resolution (see date-stage-resolve.ts) when a journey's own first
       // milestone date field is still empty. Harmless/unused otherwise.
       'Created_Time',
+      // Standard CRM v8 lookup field ({id, name, email}) — powers staff/
+      // employee customer scoping (M9): Journey.ownerZohoId, read from this
+      // in writeJourneyBatch/planJourneyBatch (journey-batch.ts).
+      'Owner',
       tenantConfig.zoho.journey_stage_field,
       tenantConfig.zoho.journey_name_field,
       tenantConfig.zoho.journey_contact_lookup_field,

@@ -33,6 +33,7 @@ export async function requireStaffAuth(req: FastifyRequest, reply: FastifyReply)
 
   req.staffId = session.staffId;
   req.staffRole = session.staff.role;
+  req.staffZohoOwnerId = session.staff.zohoOwnerId;
 }
 
 /**

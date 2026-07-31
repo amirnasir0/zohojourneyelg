@@ -5,7 +5,7 @@ import { prisma } from '../lib/prisma.js';
 import type { ZohoClient, ZohoRecord } from '../lib/zoho-client.js';
 import { extractCreatedTime, resolveDateDrivenStage } from '../sync/date-stage-resolve.js';
 import { computeStageHistoryDedupeKey } from './journey-updated.js';
-import { writeJourneyBatch } from '../sync/journey-batch.js';
+import { extractOwnerZohoId, writeJourneyBatch } from '../sync/journey-batch.js';
 import type { WebhookResult } from './types.js';
 
 function isUniqueConstraintError(err: unknown): boolean {
@@ -39,6 +39,9 @@ function journeyFieldsToFetch(tenantConfig: TenantConfig): string[] {
     'id',
     'Modified_Time',
     'Created_Time',
+    // Standard CRM v8 lookup field ({id, name, email}) — powers staff/
+    // employee customer scoping (M9): Journey.ownerZohoId.
+    'Owner',
     tenantConfig.zoho.journey_stage_field,
     tenantConfig.zoho.journey_name_field,
     tenantConfig.zoho.journey_contact_lookup_field,
@@ -125,6 +128,12 @@ export async function handleSalesOrderUpdated(body: unknown, tenantConfig: Tenan
       stage: fetchedStage,
       stageIndex: newStageIndex,
       refValues: newRefValues as Prisma.InputJsonValue,
+      // Refreshed as a side effect whenever the record updates for any
+      // other reason — not itself a trigger for relevantFieldsChanged above,
+      // since an Owner reassignment alone is invisible to the customer and
+      // shouldn't cost a webhook-driven write/cache-bust; the nightly full
+      // reconcile is an acceptable freshness bound for that rare case.
+      ownerZohoId: extractOwnerZohoId(fetched as ZohoRecord),
       raw: fetched as Prisma.InputJsonValue,
       syncedAt: new Date(),
     },

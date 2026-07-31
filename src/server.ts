@@ -1,5 +1,6 @@
 import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
+import multipart from '@fastify/multipart';
 import Fastify from 'fastify';
 import { loadTenantConfig } from './config/loader.js';
 import { isPrismaConnectionError } from './lib/prisma-errors.js';
@@ -14,6 +15,7 @@ import { registerHealthzRoutes } from './routes/healthz.js';
 import { registerMeRoutes } from './routes/me.js';
 import { registerStaffAdminRoutes } from './routes/staff-admin.js';
 import { registerStaffAuthRoutes } from './routes/staff-auth.js';
+import { registerStaffCustomerRoutes } from './routes/staff-customers.js';
 import { registerTicketRoutes } from './routes/tickets.js';
 import { registerWebhookRoutes } from './routes/webhooks.js';
 import { startSyncScheduler } from './sync/scheduler.js';
@@ -44,6 +46,8 @@ await app.register(cors, {
     callback(null, false);
   },
 });
+
+await app.register(multipart);
 
 app.setErrorHandler((err, req, reply) => {
   req.log.error({ err }, 'unhandled request error');
@@ -109,6 +113,7 @@ await registerTicketRoutes(app);
 await registerWebhookRoutes(app);
 await registerStaffAuthRoutes(app);
 await registerStaffAdminRoutes(app);
+await registerStaffCustomerRoutes(app);
 
 const stopScheduler = startSyncScheduler(app.tenantConfig);
 
