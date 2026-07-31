@@ -17,6 +17,7 @@ import { registerMeRoutes } from './routes/me.js';
 import { registerStaffAdminRoutes } from './routes/staff-admin.js';
 import { registerStaffAuthRoutes } from './routes/staff-auth.js';
 import { registerStaffCustomerRoutes } from './routes/staff-customers.js';
+import { registerStaffReportsRoutes } from './routes/staff-reports.js';
 import { registerTicketRoutes } from './routes/tickets.js';
 import { registerWebhookRoutes } from './routes/webhooks.js';
 import { startSyncScheduler } from './sync/scheduler.js';
@@ -116,6 +117,7 @@ await registerWebhookRoutes(app);
 await registerStaffAuthRoutes(app);
 await registerStaffAdminRoutes(app);
 await registerStaffCustomerRoutes(app);
+await registerStaffReportsRoutes(app);
 
 const stopScheduler = startSyncScheduler(app.tenantConfig);
 
