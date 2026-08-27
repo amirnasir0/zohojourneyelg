@@ -33,6 +33,26 @@
       {
         "type": "journey",
         "index": 2,
+        "crm_value": "1st Disbursement",
+        "date_field": "Disbursement_Date",
+        "display": "1st Disbursement",
+        "owner": "elgris",
+        "next_copy": "Your first loan/subsidy disbursement is being processed.",
+        "_review": true
+      },
+      {
+        "type": "journey",
+        "index": 3,
+        "crm_value": "Accounts Approve",
+        "date_field": "Accounts_Approval",
+        "display": "Accounts Approve",
+        "owner": "elgris",
+        "next_copy": "Your project is being reviewed and approved by our accounts team.",
+        "_review": true
+      },
+      {
+        "type": "journey",
+        "index": 4,
         "crm_value": "Material Dispatch",
         "date_field": "Material_Dispatch_Date",
         "display": "Material Dispatch",
@@ -41,7 +61,7 @@
       },
       {
         "type": "journey",
-        "index": 3,
+        "index": 5,
         "crm_value": "Construction",
         "date_field": "Construction_Date",
         "display": "Construction",
@@ -50,7 +70,27 @@
       },
       {
         "type": "journey",
-        "index": 4,
+        "index": 6,
+        "crm_value": "Bond Completing",
+        "date_field": "Bond_Completion",
+        "display": "Bond Completing",
+        "owner": "elgris",
+        "next_copy": "Your subsidy bond documentation is being completed.",
+        "_review": true
+      },
+      {
+        "type": "journey",
+        "index": 7,
+        "crm_value": "Release Order",
+        "date_field": "Release_Order_Date",
+        "display": "Release Order",
+        "owner": "elgris",
+        "next_copy": "A release order is being issued to proceed with your installation.",
+        "_review": true
+      },
+      {
+        "type": "journey",
+        "index": 8,
         "crm_value": "Net Metering",
         "date_field": "Net_Metering_Date",
         "display": "Net Metering",
@@ -59,27 +99,17 @@
       },
       {
         "type": "journey",
-        "index": 5,
-        "crm_value": "Bond Completion",
-        "date_field": "Bond_Completion",
-        "display": "Bond Completion",
+        "index": 9,
+        "crm_value": "2nd Disbursement",
+        "date_field": "Disbursement_Date_2",
+        "display": "2nd Disbursement",
         "owner": "elgris",
-        "next_copy": "Your subsidy bond documentation is being completed.",
+        "next_copy": "Your second loan/subsidy disbursement is being processed.",
         "_review": true
       },
       {
         "type": "journey",
-        "index": 6,
-        "crm_value": "Disbursement",
-        "date_field": "Disbursement_Date",
-        "display": "Disbursement",
-        "owner": "elgris",
-        "next_copy": "Your loan/subsidy amount is being disbursed.",
-        "_review": true
-      },
-      {
-        "type": "journey",
-        "index": 7,
+        "index": 10,
         "crm_value": "Subsidy Redeem",
         "date_field": "Subsidy_Redeem_Date",
         "display": "Subsidy Redeem",
@@ -88,7 +118,7 @@
       },
       {
         "type": "journey",
-        "index": 8,
+        "index": 11,
         "crm_value": "Subsidy Received",
         "date_field": "Subsidy_Received_Date",
         "display": "Subsidy Received",
@@ -99,11 +129,14 @@
   },
   "reference_fields": [
     { "crm_field": "Sales_Order", "display": "Sales Order Date" },
+    { "crm_field": "Disbursement_Date", "display": "1st Disbursement Date" },
+    { "crm_field": "Accounts_Approval", "display": "Accounts Approve Date" },
     { "crm_field": "Material_Dispatch_Date", "display": "Material Dispatch Date" },
     { "crm_field": "Construction_Date", "display": "Construction Date" },
+    { "crm_field": "Bond_Completion", "display": "Bond Completing Date" },
+    { "crm_field": "Release_Order_Date", "display": "Release Order Date" },
     { "crm_field": "Net_Metering_Date", "display": "Net Metering Date" },
-    { "crm_field": "Bond_Completion", "display": "Bond Completion Date" },
-    { "crm_field": "Disbursement_Date", "display": "Disbursement Date" },
+    { "crm_field": "Disbursement_Date_2", "display": "2nd Disbursement Date" },
     { "crm_field": "Subsidy_Redeem_Date", "display": "Subsidy Redeem Date" },
     { "crm_field": "Subsidy_Received_Date", "display": "Subsidy Received Date" }
   ],
