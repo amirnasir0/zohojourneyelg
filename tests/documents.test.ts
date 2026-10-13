@@ -161,10 +161,10 @@ describe('POST /me/documents/:key/respond', () => {
     expect(prisma.contact.update).toHaveBeenCalledWith({ where: { id: 'c1' }, data: { pendingCustomerReview: false } });
   });
 
-  it('rejects: kicks the document back to UPLOADED (not REJECTED) and stores the note', async () => {
+  it('rejects: persists REJECTED (a distinct, actionable state) and stores the note', async () => {
     mockAuthAs('c1');
     vi.mocked(prisma.document.findUnique).mockResolvedValue(submittedRow as never);
-    vi.mocked(prisma.document.update).mockResolvedValue({ ...submittedRow, status: 'UPLOADED', reviewedAt: new Date(), reviewNote: 'blurry photo' } as never);
+    vi.mocked(prisma.document.update).mockResolvedValue({ ...submittedRow, status: 'REJECTED', reviewedAt: new Date(), reviewNote: 'blurry photo' } as never);
     vi.mocked(prisma.document.count).mockResolvedValue(1);
 
     const app = await buildApp();
@@ -178,7 +178,7 @@ describe('POST /me/documents/:key/respond', () => {
     expect(res.statusCode).toBe(200);
     expect(prisma.document.update).toHaveBeenCalledWith({
       where: { id: 'd1' },
-      data: expect.objectContaining({ status: 'UPLOADED', reviewNote: 'blurry photo' }),
+      data: expect.objectContaining({ status: 'REJECTED', reviewNote: 'blurry photo' }),
     });
   });
 

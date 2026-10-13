@@ -143,15 +143,19 @@ export async function runFullReconcile(zohoClient: ZohoClient, tenantConfig: Ten
     const isCleanPass = runStart.mode === 'fresh';
 
     if (isCleanPass) {
+      // isDemo: false on every cleanup below — the reviewer/demo account's
+      // Contact/Journey/Ticket rows use hardcoded sentinel ids that will
+      // never appear in a real Zoho export, so without this guard a full
+      // reconcile would wipe them out on every run. See review-account.ts.
       if (zohoContactIds.length > 0) {
-        const { count } = await prisma.contact.deleteMany({ where: { zohoContactId: { notIn: zohoContactIds } } });
+        const { count } = await prisma.contact.deleteMany({ where: { zohoContactId: { notIn: zohoContactIds }, isDemo: false } });
         console.log(`[reconcile] contact cleanup: removed ${count} local row(s) not present in Zoho`);
       } else {
         console.error('[reconcile] Zoho returned zero contacts, skipping contact cleanup to avoid wiping local data');
       }
 
       if (zohoJourneyIds.length > 0) {
-        const { count } = await prisma.journey.deleteMany({ where: { zohoRecordId: { notIn: zohoJourneyIds } } });
+        const { count } = await prisma.journey.deleteMany({ where: { zohoRecordId: { notIn: zohoJourneyIds }, contact: { isDemo: false } } });
         console.log(`[reconcile] journey cleanup: removed ${count} local row(s) not present in Zoho`);
       } else {
         console.error('[reconcile] Zoho returned zero journey records, skipping journey cleanup to avoid wiping local data');
@@ -162,7 +166,7 @@ export async function runFullReconcile(zohoClient: ZohoClient, tenantConfig: Ten
       // same empty-response guard would wipe every local ticket row.
       if (deskClient) {
         if (deskTicketIds.length > 0) {
-          const { count } = await prisma.ticket.deleteMany({ where: { deskTicketId: { notIn: deskTicketIds } } });
+          const { count } = await prisma.ticket.deleteMany({ where: { deskTicketId: { notIn: deskTicketIds }, contact: { isDemo: false } } });
           console.log(`[reconcile] ticket cleanup: removed ${count} local row(s) not present in Zoho Desk`);
         } else {
           console.error('[reconcile] Zoho Desk returned zero tickets, skipping ticket cleanup to avoid wiping local data');

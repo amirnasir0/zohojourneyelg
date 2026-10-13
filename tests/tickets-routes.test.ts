@@ -140,6 +140,10 @@ beforeEach(async () => {
   // Matches the boot-time deskContext snapshot by default — tests that
   // care about the live-vs-boot-snapshot distinction override this.
   mockCategoryLayout(['General', 'Defects']);
+  // Both routes now fetch the contact first (to check isDemo before even
+  // looking at Desk availability) — a plain non-demo contact by default;
+  // tests that care about isDemo/other contact fields override this.
+  vi.mocked(prisma.contact.findUnique).mockResolvedValue({ id: 'c1', isDemo: false } as never);
 });
 
 describe('GET /me/tickets/categories', () => {
@@ -371,6 +375,54 @@ describe('POST /me/tickets', () => {
 
     expect(res.statusCode).toBe(201);
     expect(createTicketForContact).toHaveBeenCalled();
+  });
+});
+
+describe('reviewer/demo account — never reaches Zoho Desk', () => {
+  it('GET /me/tickets/categories returns a static list without calling Desk, even when Desk is unavailable', async () => {
+    mockAuthAs('demo-1');
+    vi.mocked(prisma.contact.findUnique).mockResolvedValue({ id: 'demo-1', isDemo: true } as never);
+
+    const app = await buildApp({ withDesk: false });
+    const res = await app.inject({ method: 'GET', url: '/me/tickets/categories', headers: authHeader('demo-1') });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().categories.length).toBeGreaterThan(0);
+    expect(deskClient.getLayout).not.toHaveBeenCalled();
+  });
+
+  it('POST /me/tickets creates a local-only ticket without calling Desk, even when Desk is unavailable', async () => {
+    mockAuthAs('demo-1');
+    vi.mocked(prisma.contact.findUnique).mockResolvedValue({ id: 'demo-1', isDemo: true } as never);
+    vi.mocked(prisma.ticket.create).mockResolvedValue({ ...ticketRow, id: 'demo-ticket-1', contactId: 'demo-1' } as never);
+
+    const app = await buildApp({ withDesk: false });
+    const res = await app.inject({
+      method: 'POST',
+      url: '/me/tickets',
+      headers: authHeader('demo-1'),
+      payload: { category: 'Panel Issue', description: 'Test' },
+    });
+
+    expect(res.statusCode).toBe(201);
+    expect(createTicketForContact).not.toHaveBeenCalled();
+    expect(deskClient.getLayout).not.toHaveBeenCalled();
+    expect(prisma.ticket.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ contactId: 'demo-1', category: 'Panel Issue', status: 'Open' }),
+      }),
+    );
+  });
+
+  it('POST /me/tickets still 400s a demo account with no category', async () => {
+    mockAuthAs('demo-1');
+    vi.mocked(prisma.contact.findUnique).mockResolvedValue({ id: 'demo-1', isDemo: true } as never);
+
+    const app = await buildApp({ withDesk: false });
+    const res = await app.inject({ method: 'POST', url: '/me/tickets', headers: authHeader('demo-1'), payload: {} });
+
+    expect(res.statusCode).toBe(400);
+    expect(prisma.ticket.create).not.toHaveBeenCalled();
   });
 });
 

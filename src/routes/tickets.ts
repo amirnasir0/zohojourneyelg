@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { requireAuth } from '../lib/auth-middleware.js';
 import { createTicketForContact } from '../lib/desk-contact-bridge.js';
@@ -18,8 +19,27 @@ function isOpenTicket(raw: unknown): boolean {
   return statusType !== 'Closed';
 }
 
+// Static, cosmetic-only list shown to the reviewer/demo account instead of
+// a live Desk fetch — the safety requirement is "never reaches Zoho Desk,"
+// which a read-only category lookup would still violate.
+const DEMO_TICKET_CATEGORIES = ['Panel Issue', 'Inverter Issue', 'Net Meter Problem', 'Subsidy Query', 'Billing', 'Other'];
+
 export async function registerTicketRoutes(app: FastifyInstance) {
   app.get('/me/tickets/categories', { preHandler: requireAuth }, async (req, reply) => {
+    const contact = await prisma.contact.findUnique({ where: { id: req.contactId } });
+    if (!contact) {
+      return reply.code(404).send({ error: 'NOT_FOUND' });
+    }
+
+    if (contact.isDemo) {
+      return sendWithEtag(
+        req,
+        reply,
+        { categories: DEMO_TICKET_CATEGORIES, response_time_copy: app.tenantConfig.desk.response_time_copy },
+        'private, no-cache',
+      );
+    }
+
     if (!app.deskClient || !app.deskContext) {
       return reply.code(503).send({ error: 'DESK_UNAVAILABLE' });
     }
@@ -29,14 +49,54 @@ export async function registerTicketRoutes(app: FastifyInstance) {
   });
 
   app.post('/me/tickets', { preHandler: requireAuth }, async (req, reply) => {
-    if (!app.deskClient || !app.deskContext) {
-      return reply.code(503).send({ error: 'DESK_UNAVAILABLE' });
-    }
-
     const body = (req.body ?? {}) as CreateTicketBody;
     const category = typeof body.category === 'string' ? body.category.trim() : '';
     const description = typeof body.description === 'string' ? body.description : undefined;
     const force = body.force === true;
+
+    const contact = await prisma.contact.findUnique({ where: { id: req.contactId } });
+    if (!contact) {
+      return reply.code(404).send({ error: 'NOT_FOUND' });
+    }
+
+    // Reviewer/demo account: a fully local, synthetic ticket — the real
+    // flow's response shape, but never a Desk contact lookup/create, never
+    // a real createTicket call. Per the explicit safety requirement, this
+    // must never reach Zoho Desk at all, not even to validate the category.
+    if (contact.isDemo) {
+      if (!category) {
+        return reply.code(400).send({ error: 'INVALID_BODY', message: 'category must be one of the configured Desk category values' });
+      }
+
+      const now = new Date();
+      const ticket = await prisma.ticket.create({
+        data: {
+          deskTicketId: `DEMO-TICKET-${randomUUID()}`,
+          contactId: contact.id,
+          ticketNumber: `DEMO-${Math.floor(1000 + Math.random() * 9000)}`,
+          subject: category,
+          description: description ?? null,
+          category,
+          status: 'Open',
+          statusDisplay: app.tenantConfig.desk.status_display_map['Open'] ?? 'Open',
+          ownerName: 'Support Team',
+          coOwnerName: null,
+          priority: 'Normal',
+          closedAt: null,
+          createdAt: now,
+          updatedAt: now,
+          syncedAt: now,
+          raw: { statusType: 'Open' },
+        },
+      });
+
+      await invalidateTicketsCache(contact.id);
+      return reply.code(201).send(buildTicketSummary(ticket));
+    }
+
+    if (!app.deskClient || !app.deskContext) {
+      return reply.code(503).send({ error: 'DESK_UNAVAILABLE' });
+    }
 
     // Same live (cached) source GET /me/tickets/categories serves, so a
     // category the customer was just shown always validates here too — the
@@ -52,11 +112,6 @@ export async function registerTicketRoutes(app: FastifyInstance) {
     // doesn't declare one). The category value doubles as the ticket
     // subject, matching Desk's own required `subject` field.
     const subject = category;
-
-    const contact = await prisma.contact.findUnique({ where: { id: req.contactId } });
-    if (!contact) {
-      return reply.code(404).send({ error: 'NOT_FOUND' });
-    }
 
     if (!force) {
       const candidates = await prisma.ticket.findMany({ where: { contactId: contact.id, category } });

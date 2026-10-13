@@ -7,6 +7,7 @@ import { sendOtp } from '../lib/otp-providers/index.js';
 import { generateOtp, storeOtp, verifyStoredOtp } from '../lib/otp-store.js';
 import { prisma } from '../lib/prisma.js';
 import { checkAndIncr } from '../lib/rate-limit.js';
+import { REVIEW_DEMO_ZOHO_CONTACT_ID } from '../lib/review-account.js';
 
 const MOBILE_RATE_LIMIT = 3;
 const MOBILE_RATE_WINDOW_SECONDS = 15 * 60;
@@ -25,6 +26,18 @@ const verifyOtpBodySchema = z.object({ mobile: z.string().min(1), otp: z.string(
 // the expiry in place of an explicit decision to keep it.
 const UNIVERSAL_TEST_OTP_EXPIRY = new Date('2026-08-16T00:00:00Z');
 
+// Play/App Store reviewer login (REVIEW_PHONE/REVIEW_OTP) — unlike
+// UNIVERSAL_TEST_OTP above (which logs into ANY real customer's account and
+// hard-expires), this is scoped to exactly one fixed number, logs into one
+// dedicated non-real demo Contact (never resolved by mobile-number lookup —
+// see review-account.ts for why), and never expires on its own: it's purely
+// env-var gated, per the explicit requirement to be able to turn it off
+// later without a new deploy. Both values are expected already-normalized
+// E.164 (e.g. "+919999999999") — compared with strict equality against the
+// already-normalized `mobile` variable below, no re-normalization needed.
+const REVIEW_PHONE = process.env.REVIEW_PHONE;
+const REVIEW_OTP = process.env.REVIEW_OTP;
+
 export async function registerAuthRoutes(app: FastifyInstance) {
   app.post('/auth/send-otp', async (req, reply) => {
     const parsed = sendOtpBodySchema.safeParse(req.body);
@@ -35,6 +48,14 @@ export async function registerAuthRoutes(app: FastifyInstance) {
     const mobile = normalizePhone(parsed.data.mobile);
     if (!mobile) {
       return reply.code(400).send({ error: 'INVALID_MOBILE' });
+    }
+
+    // Never sends a real OTP for the reviewer number: no Interakt WhatsApp,
+    // no SMS fallback, no rate-limit bookkeeping (a reviewer retrying the
+    // login flow repeatedly during a multi-day review must never get
+    // rate-limited), and no write to the real OTP store at all.
+    if (REVIEW_PHONE && mobile === REVIEW_PHONE) {
+      return reply.code(200).send({ success: true, channel: 'whatsapp' });
     }
 
     const [mobileOk, ipOk] = await Promise.all([
@@ -80,6 +101,27 @@ export async function registerAuthRoutes(app: FastifyInstance) {
     return { token, contact: { id: contact.id, fullName: contact.fullName, email: contact.email } };
   }
 
+  // Resolved by the hardcoded sentinel zohoContactId, NEVER by mobile
+  // number — REVIEW_PHONE can (and for Elgris, already does) collide with a
+  // real synced customer's mobile number, so issueSessionForMobile's
+  // lookup-by-mobile would log the reviewer into a real account instead of
+  // the dedicated demo one. Fails closed (NO_ACCOUNT) if the seed script
+  // hasn't been run yet, rather than crashing.
+  async function issueSessionForReviewAccount() {
+    const contact = await prisma.contact.findUnique({ where: { zohoContactId: REVIEW_DEMO_ZOHO_CONTACT_ID } });
+    if (!contact) {
+      return { token: null, status: 'NO_ACCOUNT' as const };
+    }
+
+    const jti = randomUUID();
+    const expiresAt = new Date(Date.now() + SESSION_TTL_MS);
+    await prisma.session.create({ data: { contactId: contact.id, jti, expiresAt } });
+
+    const token = await signSessionToken(contact.id, jti);
+
+    return { token, contact: { id: contact.id, fullName: contact.fullName, email: contact.email } };
+  }
+
   app.post('/auth/verify-otp', async (req, reply) => {
     const parsed = verifyOtpBodySchema.safeParse(req.body);
     if (!parsed.success) {
@@ -89,6 +131,11 @@ export async function registerAuthRoutes(app: FastifyInstance) {
     const mobile = normalizePhone(parsed.data.mobile);
     if (!mobile) {
       return reply.code(400).send({ error: 'INVALID_MOBILE' });
+    }
+
+    if (REVIEW_PHONE && REVIEW_OTP && mobile === REVIEW_PHONE && parsed.data.otp === REVIEW_OTP) {
+      app.log.info({ mobile }, '[review-account] reviewer login');
+      return reply.code(200).send(await issueSessionForReviewAccount());
     }
 
     const bypassCode = process.env.UNIVERSAL_TEST_OTP;

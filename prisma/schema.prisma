@@ -54,6 +54,13 @@ model Contact {
   // so the app can show a badge without re-scanning every document row on
   // each read. Deliberately no push on set — customer sees it on next open.
   pendingCustomerReview Boolean @default(false) @map("pending_customer_review")
+  // Marks the single reserved Play/App Store reviewer demo account (see
+  // src/lib/review-account.ts) — never a real customer. Looked up by a
+  // hardcoded sentinel zohoContactId, NOT by mobile number (the reviewer's
+  // test number can collide with a real Zoho-synced contact's number, as it
+  // already does here). This flag is what every sync-cleanup deleteMany and
+  // every Zoho/Desk-writing route checks to exclude/short-circuit demo data.
+  isDemo Boolean @default(false) @map("is_demo")
 
   journeys       Journey[]
   sessions       Session[]
