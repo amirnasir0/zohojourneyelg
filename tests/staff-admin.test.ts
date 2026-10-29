@@ -8,7 +8,8 @@ vi.mock('../src/lib/redis.js', () => ({ redis: redisMock }));
 vi.mock('../src/lib/prisma.js', () => ({
   prisma: {
     staffUser: { findUnique: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn() },
-    staffSession: { findUnique: vi.fn() },
+    staffSession: { findUnique: vi.fn(), updateMany: vi.fn() },
+    $transaction: vi.fn(),
   },
 }));
 
@@ -31,7 +32,7 @@ async function buildApp() {
   return app;
 }
 
-function mockAuthAs(staffId: string, role: 'ADMIN' | 'EMPLOYEE') {
+function mockAuthAs(staffId: string, role: 'ADMIN' | 'MANAGER' | 'EMPLOYEE') {
   vi.mocked(verifyStaffSessionToken).mockResolvedValue({ sub: staffId, jti: `jti-${staffId}`, role });
   vi.mocked(prisma.staffSession.findUnique).mockResolvedValue({
     id: 'sess-1',
@@ -218,5 +219,70 @@ describe('PATCH /staff/users/:id', () => {
     });
 
     expect(prisma.staffUser.update).toHaveBeenCalledWith({ where: { id: 'emp-1' }, data: { active: true } });
+  });
+});
+
+describe('POST /staff/users/:id/password', () => {
+  it('re-hashes the new password and revokes every live session for that account', async () => {
+    mockAuthAs('admin-1', 'ADMIN');
+    vi.mocked(prisma.staffUser.findUnique).mockResolvedValue({ id: 'emp-1' } as never);
+    vi.mocked(prisma.$transaction).mockResolvedValue([] as never);
+
+    const app = await buildApp();
+    const res = await app.inject({ method: 'POST', url: '/staff/users/emp-1/password', headers: authHeader, payload: { password: 'brand-new-pass' } });
+
+    expect(res.statusCode).toBe(200);
+    expect(hashPassword).toHaveBeenCalledWith('brand-new-pass');
+    expect(prisma.staffUser.update).toHaveBeenCalledWith({ where: { id: 'emp-1' }, data: { passwordHash: 'hashed-password' } });
+    expect(prisma.staffSession.updateMany).toHaveBeenCalledWith({ where: { staffId: 'emp-1', revokedAt: null }, data: { revokedAt: expect.any(Date) } });
+  });
+
+  it('rejects a password shorter than 8 characters', async () => {
+    mockAuthAs('admin-1', 'ADMIN');
+    const app = await buildApp();
+    const res = await app.inject({ method: 'POST', url: '/staff/users/emp-1/password', headers: authHeader, payload: { password: 'short' } });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('404s for an unknown staff id', async () => {
+    mockAuthAs('admin-1', 'ADMIN');
+    vi.mocked(prisma.staffUser.findUnique).mockResolvedValue(null);
+    const app = await buildApp();
+    const res = await app.inject({ method: 'POST', url: '/staff/users/nope/password', headers: authHeader, payload: { password: 'brand-new-pass' } });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it('is admin-only — a MANAGER gets 403', async () => {
+    mockAuthAs('mgr-1', 'MANAGER');
+    const app = await buildApp();
+    const res = await app.inject({ method: 'POST', url: '/staff/users/emp-1/password', headers: authHeader, payload: { password: 'brand-new-pass' } });
+    expect(res.statusCode).toBe(403);
+  });
+});
+
+describe('MANAGER role', () => {
+  it('can be assigned when creating a staff user', async () => {
+    mockAuthAs('admin-1', 'ADMIN');
+    vi.mocked(prisma.staffUser.findUnique).mockResolvedValue(null);
+    vi.mocked(prisma.staffUser.create).mockResolvedValue({
+      id: 'mgr-1',
+      email: 'manager@webspecia.in',
+      role: 'MANAGER',
+      fullName: null,
+      zohoOwnerId: null,
+      active: true,
+      createdAt: new Date(),
+    } as never);
+
+    const app = await buildApp();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/staff/users',
+      headers: authHeader,
+      payload: { email: 'manager@webspecia.in', password: 'a-real-password', role: 'MANAGER' },
+    });
+
+    expect(res.statusCode).toBe(201);
+    expect(res.json().role).toBe('MANAGER');
   });
 });

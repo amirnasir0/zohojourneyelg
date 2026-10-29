@@ -12,6 +12,7 @@ vi.mock('../src/lib/prisma.js', () => ({
     contact: { findUnique: vi.fn() },
     journey: { findFirst: vi.fn(), findMany: vi.fn() },
     stageHistory: { findMany: vi.fn() },
+    document: { findMany: vi.fn() },
   },
 }));
 
@@ -154,6 +155,7 @@ describe('GET /me/journeys/:id authorization scoping', () => {
       syncedAt: new Date(),
     } as never);
     vi.mocked(prisma.stageHistory.findMany).mockResolvedValue([]);
+    vi.mocked(prisma.document.findMany).mockResolvedValue([]);
 
     const app = await buildApp();
     const res = await app.inject({ method: 'GET', url: '/me/journeys/j1', headers: { authorization: 'Bearer token-a' } });
@@ -162,6 +164,29 @@ describe('GET /me/journeys/:id authorization scoping', () => {
     const body = res.json();
     expect(body.status).toBe('in_progress');
     expect(body.stage_timeline).toHaveLength(1);
+    expect(body.document_approvals).toEqual([]);
+  });
+
+  it('lists approved documents on the timeline, oldest first, without the reviewer', async () => {
+    mockAuthAs('contact-a');
+    vi.mocked(prisma.journey.findFirst).mockResolvedValue({
+      id: 'j1',
+      name: 'Deal 1',
+      stage: 'Site Survey',
+      stageIndex: 1,
+      refValues: {},
+      syncedAt: new Date(),
+    } as never);
+    vi.mocked(prisma.stageHistory.findMany).mockResolvedValue([]);
+    vi.mocked(prisma.document.findMany).mockResolvedValue([
+      { documentKey: 'aadhaar_card', status: 'APPROVED', reviewedAt: new Date('2026-10-02'), reviewedById: 'mgr-1' },
+      { documentKey: 'pan_card', status: 'PENDING_APPROVAL', reviewedAt: null },
+    ] as never);
+
+    const app = await buildApp();
+    const res = await app.inject({ method: 'GET', url: '/me/journeys/j1', headers: { authorization: 'Bearer token-a' } });
+
+    expect(res.json().document_approvals).toEqual([{ key: 'aadhaar_card', display_name: 'Aadhaar Card', approved_at: '2026-10-02T00:00:00.000Z' }]);
   });
 });
 

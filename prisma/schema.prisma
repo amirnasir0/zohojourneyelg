@@ -14,6 +14,7 @@ enum StageHistorySource {
 
 enum StaffRole {
   ADMIN
+  MANAGER
   EMPLOYEE
 }
 
@@ -21,6 +22,10 @@ enum DocumentStatus {
   NOT_UPLOADED
   UPLOADED
   SUBMITTED_FOR_REVIEW
+  // Customer-uploaded from the customer app, awaiting a MANAGER's (or
+  // ADMIN's) approve/reject — distinct from SUBMITTED_FOR_REVIEW, which is
+  // the opposite direction (staff-uploaded, awaiting the customer).
+  PENDING_APPROVAL
   APPROVED
   REJECTED
 }
@@ -167,6 +172,7 @@ model StaffUser {
   sessions                 StaffSession[]
   uploadedDocuments        Document[]        @relation("DocumentUploadedBy")
   uploadedDocumentVersions DocumentVersion[] @relation("DocumentVersionUploadedBy")
+  reviewedDocuments        Document[]        @relation("DocumentReviewedBy")
 
   @@map("staff_users")
 }
@@ -207,10 +213,14 @@ model Document {
   uploadedAt       DateTime?      @map("uploaded_at")
   reviewedAt       DateTime?      @map("reviewed_at")
   reviewNote       String?        @map("review_note")
+  // Set only when a staff manager reviewed it — null for a customer's own
+  // approve/reject of a staff-submitted document.
+  reviewedById     String?        @map("reviewed_by")
 
   contact    Contact           @relation(fields: [contactId], references: [id], onDelete: Cascade)
   journey    Journey?          @relation(fields: [journeyId], references: [id], onDelete: SetNull)
   uploadedBy StaffUser?        @relation("DocumentUploadedBy", fields: [uploadedById], references: [id], onDelete: SetNull)
+  reviewedBy StaffUser?        @relation("DocumentReviewedBy", fields: [reviewedById], references: [id], onDelete: SetNull)
   versions   DocumentVersion[]
 
   @@unique([contactId, documentKey])

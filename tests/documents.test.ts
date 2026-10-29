@@ -9,8 +9,9 @@ vi.mock('../src/lib/redis.js', () => ({ redis: redisMock }));
 vi.mock('../src/lib/prisma.js', () => ({
   prisma: {
     session: { findUnique: vi.fn() },
-    document: { findMany: vi.fn(), findUnique: vi.fn(), update: vi.fn(), count: vi.fn() },
-    contact: { update: vi.fn() },
+    document: { findMany: vi.fn(), findUnique: vi.fn(), update: vi.fn(), count: vi.fn(), upsert: vi.fn() },
+    documentVersion: { count: vi.fn(), create: vi.fn() },
+    contact: { update: vi.fn(), findUnique: vi.fn() },
   },
 }));
 
@@ -82,9 +83,18 @@ const tenantConfig: TenantConfig = {
   },
 };
 
+const zohoClient = {
+  getRecordsPage: vi.fn(),
+  getRecord: vi.fn(),
+  getModuleFields: vi.fn(),
+  uploadAttachment: vi.fn(),
+};
+
 async function buildApp() {
   const app = Fastify();
   app.decorate('tenantConfig', tenantConfig);
+  app.decorate('zohoClient', zohoClient);
+  await app.register((await import('@fastify/multipart')).default);
   await registerDocumentRoutes(app);
   return app;
 }
@@ -219,6 +229,70 @@ describe('POST /me/documents/:key/respond', () => {
     mockAuthAs('c1');
     const app = await buildApp();
     const res = await app.inject({ method: 'POST', url: '/me/documents/aadhaar_card/respond', headers: authHeader, payload: { approved: 'yes' } });
+    expect(res.statusCode).toBe(400);
+  });
+});
+
+describe('POST /me/documents/:key/upload', () => {
+  function uploadForm() {
+    const form = new FormData();
+    form.append('file', new Blob(['scan'], { type: 'image/jpeg' }), 'IMG_1.jpg');
+    return form;
+  }
+
+  const contact = {
+    id: 'c1',
+    fullName: 'Ganesh Kumar',
+    isDemo: false,
+    journeys: [{ id: 'j1', zohoRecordId: 'so1', syncedAt: new Date('2026-01-01') }],
+  };
+
+  beforeEach(() => {
+    vi.mocked(prisma.contact.findUnique).mockResolvedValue(contact as never);
+    vi.mocked(prisma.document.findUnique).mockResolvedValue(null);
+    vi.mocked(prisma.documentVersion.count).mockResolvedValue(0);
+    vi.mocked(prisma.documentVersion.create).mockResolvedValue({} as never);
+    vi.mocked(prisma.document.upsert).mockResolvedValue({ id: 'doc-1', documentKey: 'aadhaar_card', status: 'PENDING_APPROVAL', uploadedAt: new Date() } as never);
+    vi.mocked(zohoClient.uploadAttachment).mockResolvedValue({ id: 'zoho-att-1' });
+  });
+
+  it('attaches the file to the Sales Order and lands it as PENDING_APPROVAL with no staff uploader', async () => {
+    mockAuthAs('c1');
+    const app = await buildApp();
+    const res = await app.inject({ method: 'POST', url: '/me/documents/aadhaar_card/upload', headers: authHeader, payload: uploadForm() });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().status).toBe('PENDING_APPROVAL');
+    expect(zohoClient.uploadAttachment).toHaveBeenCalledWith('Sales_Orders', 'so1', expect.objectContaining({ filename: 'Aadhaar Card - Ganesh Kumar (v1).jpg' }));
+    expect(prisma.document.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({ create: expect.objectContaining({ status: 'PENDING_APPROVAL', uploadedById: null, contactId: 'c1' }) }),
+    );
+  });
+
+  it('409s instead of replacing an already-approved document', async () => {
+    mockAuthAs('c1');
+    vi.mocked(prisma.document.findUnique).mockResolvedValue({ id: 'doc-1', status: 'APPROVED' } as never);
+    const app = await buildApp();
+    const res = await app.inject({ method: 'POST', url: '/me/documents/aadhaar_card/upload', headers: authHeader, payload: uploadForm() });
+
+    expect(res.statusCode).toBe(409);
+    expect(zohoClient.uploadAttachment).not.toHaveBeenCalled();
+  });
+
+  it('never calls Zoho for the reviewer/demo account', async () => {
+    mockAuthAs('c1');
+    vi.mocked(prisma.contact.findUnique).mockResolvedValue({ ...contact, isDemo: true } as never);
+    const app = await buildApp();
+    const res = await app.inject({ method: 'POST', url: '/me/documents/aadhaar_card/upload', headers: authHeader, payload: uploadForm() });
+
+    expect(res.statusCode).toBe(200);
+    expect(zohoClient.uploadAttachment).not.toHaveBeenCalled();
+  });
+
+  it('rejects an unconfigured document key', async () => {
+    mockAuthAs('c1');
+    const app = await buildApp();
+    const res = await app.inject({ method: 'POST', url: '/me/documents/not_a_doc/upload', headers: authHeader, payload: uploadForm() });
     expect(res.statusCode).toBe(400);
   });
 });

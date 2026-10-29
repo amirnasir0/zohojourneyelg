@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { requireAuth } from '../lib/auth-middleware.js';
+import { buildDocumentApprovals } from '../lib/document-view.js';
 import { sendWithEtag } from '../lib/http-cache.js';
 import { buildJourneySummary, buildStageTimeline, type JourneySummary } from '../lib/journey-view.js';
 import { getCachedJourneys, setCachedJourneys } from '../lib/journeys-cache.js';
@@ -74,6 +75,9 @@ export async function registerMeRoutes(app: FastifyInstance) {
     }
     // pre_journey / on_hold: no stage_timeline field — there's no live
     // journey-progress position to show a timeline against.
+
+    const documentRows = await prisma.document.findMany({ where: { contactId: req.contactId } });
+    payload.document_approvals = buildDocumentApprovals(app.tenantConfig, documentRows, false);
 
     return sendWithEtag(req, reply, payload, 'private, no-cache');
   });

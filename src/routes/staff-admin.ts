@@ -7,20 +7,23 @@ import { requireAdmin } from '../lib/staff-auth-middleware.js';
 const createStaffBodySchema = z.object({
   email: z.string().email(),
   password: z.string().min(8),
-  role: z.enum(['ADMIN', 'EMPLOYEE']),
+  role: z.enum(['ADMIN', 'MANAGER', 'EMPLOYEE']),
   full_name: z.string().min(1).optional(),
   zoho_owner_id: z.string().min(1).optional(),
 });
 
-// Deliberately excludes email/password — password reset/email change are
-// out of scope for this PATCH per explicit product decision; a rotation
-// flow (if ever needed) would be its own dedicated endpoint, not folded
-// into general profile edits.
+// Deliberately excludes email/password — email change is out of scope, and
+// a password reset is its own dedicated endpoint (POST /staff/users/:id/
+// password below), not folded into general profile edits.
 const patchStaffBodySchema = z.object({
-  role: z.enum(['ADMIN', 'EMPLOYEE']).optional(),
+  role: z.enum(['ADMIN', 'MANAGER', 'EMPLOYEE']).optional(),
   active: z.boolean().optional(),
   full_name: z.string().min(1).nullable().optional(),
   zoho_owner_id: z.string().min(1).nullable().optional(),
+});
+
+const resetPasswordBodySchema = z.object({
+  password: z.string().min(8),
 });
 
 interface StaffRow {
@@ -100,5 +103,30 @@ export async function registerStaffAdminRoutes(app: FastifyInstance) {
     });
 
     return reply.code(200).send(serializeStaff(staff));
+  });
+
+  // Admin-set password reset — passwords are only ever stored as bcrypt
+  // hashes, so a forgotten one can't be recovered, only replaced. Revokes
+  // every live session for that account so the old password (or a lost
+  // device still logged in) stops working immediately.
+  app.post('/staff/users/:id/password', { preHandler: requireAdmin }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const parsed = resetPasswordBodySchema.safeParse(req.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'INVALID_REQUEST' });
+    }
+
+    const existing = await prisma.staffUser.findUnique({ where: { id } });
+    if (!existing) {
+      return reply.code(404).send({ error: 'NOT_FOUND' });
+    }
+
+    const passwordHash = await hashPassword(parsed.data.password);
+    await prisma.$transaction([
+      prisma.staffUser.update({ where: { id }, data: { passwordHash } }),
+      prisma.staffSession.updateMany({ where: { staffId: id, revokedAt: null }, data: { revokedAt: new Date() } }),
+    ]);
+
+    return reply.code(200).send({ success: true });
   });
 }

@@ -10,8 +10,9 @@ vi.mock('../src/lib/prisma.js', () => ({
   prisma: {
     staffSession: { findUnique: vi.fn() },
     contact: { findMany: vi.fn(), findUnique: vi.fn(), update: vi.fn() },
-    document: { findMany: vi.fn(), findUnique: vi.fn(), upsert: vi.fn(), updateMany: vi.fn() },
+    document: { findMany: vi.fn(), findUnique: vi.fn(), upsert: vi.fn(), updateMany: vi.fn(), update: vi.fn() },
     documentVersion: { count: vi.fn(), create: vi.fn() },
+    stageHistory: { findMany: vi.fn() },
     $transaction: vi.fn(),
   },
 }));
@@ -20,8 +21,13 @@ vi.mock('../src/lib/staff-jwt.js', () => ({
   verifyStaffSessionToken: vi.fn(),
 }));
 
+vi.mock('../src/lib/push-notifications.js', () => ({
+  sendPushToContact: vi.fn().mockResolvedValue(undefined),
+}));
+
 const { prisma } = await import('../src/lib/prisma.js');
 const { verifyStaffSessionToken } = await import('../src/lib/staff-jwt.js');
+const { sendPushToContact } = await import('../src/lib/push-notifications.js');
 const { registerStaffCustomerRoutes } = await import('../src/routes/staff-customers.js');
 
 const tenantConfig: TenantConfig = {
@@ -106,7 +112,7 @@ async function buildApp() {
   return app;
 }
 
-function mockAuthAs(staffId: string, role: 'ADMIN' | 'EMPLOYEE', zohoOwnerId: string | null = null) {
+function mockAuthAs(staffId: string, role: 'ADMIN' | 'MANAGER' | 'EMPLOYEE', zohoOwnerId: string | null = null) {
   vi.mocked(verifyStaffSessionToken).mockResolvedValue({ sub: staffId, jti: `jti-${staffId}`, role });
   vi.mocked(prisma.staffSession.findUnique).mockResolvedValue({
     id: 'sess-1',
@@ -410,5 +416,127 @@ describe('POST /staff/customers/:contactId/documents/submit-for-review', () => {
     expect(res.statusCode).toBe(200);
     expect(prisma.document.updateMany).toHaveBeenCalledWith({ where: { id: { in: ['d1', 'd2'] } }, data: { status: 'SUBMITTED_FOR_REVIEW' } });
     expect(prisma.contact.update).toHaveBeenCalledWith({ where: { id: 'c1' }, data: { pendingCustomerReview: true } });
+  });
+});
+
+describe('MANAGER scoping', () => {
+  it('sees every customer, like an ADMIN', async () => {
+    mockAuthAs('mgr-1', 'MANAGER');
+    vi.mocked(prisma.contact.findMany).mockResolvedValue([contactOwnedByOwner1] as never);
+
+    const app = await buildApp();
+    const res = await app.inject({ method: 'GET', url: '/staff/customers', headers: authHeader });
+
+    expect(res.statusCode).toBe(200);
+    expect(prisma.contact.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: {} }));
+  });
+
+  it('can open a customer outside any owner scope', async () => {
+    mockAuthAs('mgr-1', 'MANAGER');
+    vi.mocked(prisma.contact.findUnique).mockResolvedValue(contactOwnedByOwner1 as never);
+
+    const app = await buildApp();
+    const res = await app.inject({ method: 'GET', url: '/staff/customers/c1', headers: authHeader });
+    expect(res.statusCode).toBe(200);
+  });
+});
+
+describe('GET /staff/approvals', () => {
+  it('403s for an EMPLOYEE', async () => {
+    mockAuthAs('emp-1', 'EMPLOYEE', 'owner-1');
+    const app = await buildApp();
+    const res = await app.inject({ method: 'GET', url: '/staff/approvals', headers: authHeader });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it('lists PENDING_APPROVAL documents with their customer for a MANAGER', async () => {
+    mockAuthAs('mgr-1', 'MANAGER');
+    vi.mocked(prisma.document.findMany).mockResolvedValue([
+      {
+        contactId: 'c1',
+        documentKey: 'aadhaar_card',
+        fileName: 'aadhaar.jpg',
+        fileSize: 1200,
+        uploadedAt: new Date('2026-10-01'),
+        zohoAttachmentId: 'zoho-att-9',
+        contact: { fullName: 'Ganesh Kumar', mobileE164: '+919876543210' },
+      },
+    ] as never);
+
+    const app = await buildApp();
+    const res = await app.inject({ method: 'GET', url: '/staff/approvals', headers: authHeader });
+
+    expect(res.statusCode).toBe(200);
+    expect(prisma.document.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { status: 'PENDING_APPROVAL' } }));
+    expect(res.json()).toEqual([
+      expect.objectContaining({ contact_id: 'c1', customer_name: 'Ganesh Kumar', key: 'aadhaar_card', display_name: 'Aadhaar Card' }),
+    ]);
+  });
+});
+
+describe('POST /staff/customers/:contactId/documents/:key/review', () => {
+  it('403s for an EMPLOYEE', async () => {
+    mockAuthAs('emp-1', 'EMPLOYEE', 'owner-1');
+    const app = await buildApp();
+    const res = await app.inject({ method: 'POST', url: '/staff/customers/c1/documents/aadhaar_card/review', headers: authHeader, payload: { approved: true } });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it('approves a PENDING_APPROVAL document, records the manager, and notifies the customer', async () => {
+    mockAuthAs('mgr-1', 'MANAGER');
+    vi.mocked(prisma.document.findUnique).mockResolvedValue({ id: 'doc-1', status: 'PENDING_APPROVAL' } as never);
+    vi.mocked(prisma.document.update).mockResolvedValue({
+      documentKey: 'aadhaar_card',
+      status: 'APPROVED',
+      reviewedAt: new Date(),
+      reviewNote: null,
+    } as never);
+
+    const app = await buildApp();
+    const res = await app.inject({ method: 'POST', url: '/staff/customers/c1/documents/aadhaar_card/review', headers: authHeader, payload: { approved: true } });
+
+    expect(res.statusCode).toBe(200);
+    expect(prisma.document.update).toHaveBeenCalledWith({
+      where: { id: 'doc-1' },
+      data: { status: 'APPROVED', reviewedAt: expect.any(Date), reviewedById: 'mgr-1', reviewNote: null },
+    });
+    expect(sendPushToContact).toHaveBeenCalledWith('c1', 'Document approved', 'Aadhaar Card has been approved.', { screen: 'documents' });
+  });
+
+  it('requires a note when rejecting', async () => {
+    mockAuthAs('mgr-1', 'MANAGER');
+    const app = await buildApp();
+    const res = await app.inject({ method: 'POST', url: '/staff/customers/c1/documents/aadhaar_card/review', headers: authHeader, payload: { approved: false } });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('409s for a document that is not awaiting manager approval', async () => {
+    mockAuthAs('admin-1', 'ADMIN');
+    vi.mocked(prisma.document.findUnique).mockResolvedValue({ id: 'doc-1', status: 'SUBMITTED_FOR_REVIEW' } as never);
+    const app = await buildApp();
+    const res = await app.inject({ method: 'POST', url: '/staff/customers/c1/documents/aadhaar_card/review', headers: authHeader, payload: { approved: true } });
+    expect(res.statusCode).toBe(409);
+  });
+});
+
+describe('GET /staff/customers/:contactId/journey', () => {
+  it('includes approved documents with the approving manager', async () => {
+    mockAuthAs('mgr-1', 'MANAGER');
+    vi.mocked(prisma.contact.findUnique).mockResolvedValue({
+      ...contactOwnedByOwner1,
+      journeys: [{ ...contactOwnedByOwner1.journeys[0], name: 'SO-1', stage: 'Sales Order', refValues: {}, raw: {} }],
+    } as never);
+    vi.mocked(prisma.document.findMany).mockResolvedValue([
+      { documentKey: 'pan_card', status: 'APPROVED', reviewedAt: new Date('2026-10-05'), reviewedBy: { fullName: 'Priya Manager', email: 'priya@x.in' } },
+    ] as never);
+    vi.mocked(prisma.stageHistory.findMany).mockResolvedValue([]);
+
+    const app = await buildApp();
+    const res = await app.inject({ method: 'GET', url: '/staff/customers/c1/journey', headers: authHeader });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().document_approvals).toEqual([
+      { key: 'pan_card', display_name: 'PAN Card', approved_at: '2026-10-05T00:00:00.000Z', approved_by: 'Priya Manager' },
+    ]);
   });
 });

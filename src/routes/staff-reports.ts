@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { extractCreatedTime, resolveDateDrivenStage } from '../sync/date-stage-resolve.js';
 import { buildJourneySummary, isJourneyStage } from '../lib/journey-view.js';
 import { prisma } from '../lib/prisma.js';
-import { requireStaffAuth } from '../lib/staff-auth-middleware.js';
+import { requireStaffAuth, seesAllCustomers } from '../lib/staff-auth-middleware.js';
 
 function parseDateParam(raw: unknown): Date | undefined {
   if (typeof raw !== 'string' || !raw) return undefined;
@@ -30,13 +30,13 @@ export async function registerStaffReportsRoutes(app: FastifyInstance) {
       return reply.code(400).send({ error: 'INVALID_REQUEST' });
     }
 
-    if (req.staffRole !== 'ADMIN' && !req.staffZohoOwnerId) {
+    if (!seesAllCustomers(req.staffRole) && !req.staffZohoOwnerId) {
       // Same "scoped to nobody yet" pattern as GET /staff/customers.
       return reply.code(200).send([]);
     }
 
     const journeys = await prisma.journey.findMany({
-      where: req.staffRole !== 'ADMIN' ? { ownerZohoId: req.staffZohoOwnerId } : {},
+      where: !seesAllCustomers(req.staffRole) ? { ownerZohoId: req.staffZohoOwnerId } : {},
       include: { contact: true },
     });
 

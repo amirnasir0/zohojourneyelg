@@ -1,21 +1,32 @@
 import type { Contact, Journey } from '@prisma/client';
 import type { FastifyInstance } from 'fastify';
+import { z } from 'zod';
 import type { TenantConfig } from '../config/types.js';
-import { buildDocumentChecklist } from '../lib/document-view.js';
+import { buildDocumentApprovals, buildDocumentChecklist } from '../lib/document-view.js';
+import { findDocumentDef, pickUploadJourney, storeDocumentUpload } from '../lib/document-upload.js';
 import { invalidateDocumentsCache } from '../lib/documents-cache.js';
 import { buildJourneySummary, buildStageTimeline } from '../lib/journey-view.js';
 import { prisma } from '../lib/prisma.js';
 import { sendPushToContact } from '../lib/push-notifications.js';
-import { requireStaffAuth } from '../lib/staff-auth-middleware.js';
+import { requireManager, requireStaffAuth, seesAllCustomers } from '../lib/staff-auth-middleware.js';
 import { extractCreatedTime, isDateDrivenJourney, resolveDateDrivenStage } from '../sync/date-stage-resolve.js';
 
 type ContactWithJourneys = Contact & { journeys: Journey[] };
 
+const reviewBodySchema = z
+  .object({
+    approved: z.boolean(),
+    note: z.string().min(1).optional(),
+  })
+  // Same rule as the customer's own respond route: rejecting must always
+  // carry a reason the customer can act on before re-uploading.
+  .refine((data) => data.approved || !!data.note, { message: 'note is required when rejecting', path: ['note'] });
+
 // Employees only see contacts whose journey Owner matches their own
-// zoho_owner_id; admins see everyone. Out-of-scope always 404s, never 403 —
+// zoho_owner_id; admins and managers see everyone. Out-of-scope always 404s, never 403 —
 // same "never confirm existence to the wrong caller" rule as customer routes.
 function contactInScope(contact: ContactWithJourneys, staffRole: string, staffZohoOwnerId: string | null): boolean {
-  if (staffRole === 'ADMIN') {
+  if (seesAllCustomers(staffRole)) {
     return true;
   }
   if (!staffZohoOwnerId) {
@@ -34,56 +45,12 @@ function serializeCustomerSummary(contact: Contact) {
   };
 }
 
-function findDocumentDef(
-  tenantConfig: TenantConfig,
-  key: string,
-): { stageGroupKey: string; requiresApproval: boolean; displayName: string } | undefined {
-  for (const group of tenantConfig.documents.stage_groups) {
-    const doc = group.documents.find((d) => d.key === key);
-    if (doc) {
-      return { stageGroupKey: group.stage_group_key, requiresApproval: group.requires_approval, displayName: doc.display_name };
-    }
-  }
-  return undefined;
-}
-
-const MAX_ATTACHMENT_NAME_LENGTH = 150;
-
-function sanitizeFilenamePart(raw: string): string {
-  return raw
-    .replace(/[^A-Za-z0-9 ._-]/g, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-function extensionOf(filename: string): string {
-  const match = /\.([A-Za-z0-9]+)$/.exec(filename);
-  return match?.[1] ? match[1].toLowerCase() : '';
-}
-
-// The Zoho attachment name is constructed server-side rather than trusting
-// the client-supplied filename — staff/CRM users looking at a Sales Order's
-// attachment list should be able to tell what a document is and whose it is
-// at a glance ("Electricity Bill - Rekha Gaikwad (v1).pdf"), not "IMG_4821.pdf".
-// The version number is always included, even for the first upload, so
-// every attachment for a given document_key follows one consistent pattern
-// rather than "no marker" silently meaning "there's only one." The original
-// client filename is still kept as-is in the Document row's file_name
-// column, for the app's own display purposes. A re-upload never overwrites
-// or deletes a prior version in Zoho — see DocumentVersion.
-function buildAttachmentFilename(displayName: string, contactFullName: string | null, clientFilename: string, versionNumber: number): string {
-  const ext = extensionOf(clientFilename);
-  const namePart = sanitizeFilenamePart(`${displayName} - ${contactFullName ?? 'Customer'}`).slice(0, MAX_ATTACHMENT_NAME_LENGTH) || 'document';
-  const versioned = `${namePart} (v${versionNumber})`;
-  return ext ? `${versioned}.${ext}` : versioned;
-}
-
 export async function registerStaffCustomerRoutes(app: FastifyInstance) {
   app.get('/staff/customers', { preHandler: requireStaffAuth }, async (req, reply) => {
     const { search } = req.query as { search?: unknown };
     const searchTerm = typeof search === 'string' ? search.trim() : '';
 
-    if (req.staffRole !== 'ADMIN' && !req.staffZohoOwnerId) {
+    if (!seesAllCustomers(req.staffRole) && !req.staffZohoOwnerId) {
       // Employee account isn't mapped to a Zoho CRM owner yet — scoped to
       // nobody rather than erroring; an admin fixes this via PATCH /staff/users.
       return reply.code(200).send([]);
@@ -91,7 +58,7 @@ export async function registerStaffCustomerRoutes(app: FastifyInstance) {
 
     const contacts = await prisma.contact.findMany({
       where: {
-        ...(req.staffRole !== 'ADMIN' ? { journeys: { some: { ownerZohoId: req.staffZohoOwnerId } } } : {}),
+        ...(!seesAllCustomers(req.staffRole) ? { journeys: { some: { ownerZohoId: req.staffZohoOwnerId } } } : {}),
         ...(searchTerm
           ? {
               OR: [
@@ -162,12 +129,15 @@ export async function registerStaffCustomerRoutes(app: FastifyInstance) {
       }
     }
 
+    const documentRows = await prisma.document.findMany({ where: { contactId: contact.id }, include: { reviewedBy: true } });
+
     return reply.code(200).send({
       has_journey: true,
       journey_name: summary.name,
       stage_index: summary.stage_index,
       total_stages: summary.total_stages,
       stage_timeline: stageTimeline,
+      document_approvals: buildDocumentApprovals(app.tenantConfig, documentRows, true),
     });
   });
 
@@ -199,21 +169,9 @@ export async function registerStaffCustomerRoutes(app: FastifyInstance) {
       return reply.code(503).send({ error: 'ZOHO_CLIENT_UNAVAILABLE' });
     }
 
-    if (contact.journeys.length === 0) {
+    const targetJourney = pickUploadJourney(contact, req.log);
+    if (!targetJourney) {
       return reply.code(400).send({ error: 'NO_SALES_ORDER', message: 'contact has no synced sales order to attach documents to' });
-    }
-
-    let targetJourney = contact.journeys[0]!;
-    if (contact.journeys.length > 1) {
-      // Real ambiguity, not just a silent default — logged at WARN so it's
-      // noticeable in practice, per explicit product direction. Doesn't
-      // hard-fail: the most-recently-synced journey is the best available
-      // guess for "the Sales Order this customer is actively working."
-      targetJourney = [...contact.journeys].sort((a, b) => b.syncedAt.getTime() - a.syncedAt.getTime())[0]!;
-      req.log.warn(
-        { contactId: contact.id, journeyCount: contact.journeys.length, chosenJourneyId: targetJourney.id },
-        '[staff-customers] contact has multiple journeys — uploading to the most recently synced one',
-      );
     }
 
     const filePart = await req.file();
@@ -222,60 +180,16 @@ export async function registerStaffCustomerRoutes(app: FastifyInstance) {
     }
     const buffer = await filePart.toBuffer();
 
-    // A re-upload never overwrites or deletes the previous version in
-    // Zoho — each upload lands as its own distinctly-numbered attachment,
-    // with the full history preserved in DocumentVersion. The Document row
-    // itself still just holds "current" state (unchanged by this).
-    const existingDocument = await prisma.document.findUnique({
-      where: { contactId_documentKey: { contactId: contact.id, documentKey: key } },
-    });
-    const nextVersionNumber = existingDocument ? (await prisma.documentVersion.count({ where: { documentId: existingDocument.id } })) + 1 : 1;
-
-    const attachmentFilename = buildAttachmentFilename(documentDef.displayName, contact.fullName, filePart.filename, nextVersionNumber);
-
-    const uploaded = await app.zohoClient.uploadAttachment(app.tenantConfig.zoho.journey_module, targetJourney.zohoRecordId, {
-      buffer,
-      filename: attachmentFilename,
-      contentType: filePart.mimetype,
-    });
-
-    const documentRow = await prisma.document.upsert({
-      where: { contactId_documentKey: { contactId: contact.id, documentKey: key } },
-      create: {
-        contactId: contact.id,
-        journeyId: targetJourney.id,
-        documentKey: key,
-        stageGroupKey: documentDef.stageGroupKey,
-        fileName: filePart.filename,
-        fileSize: buffer.length,
-        zohoAttachmentId: uploaded.id,
-        status: 'UPLOADED',
-        uploadedById: req.staffId,
-        uploadedAt: new Date(),
-      },
-      update: {
-        journeyId: targetJourney.id,
-        fileName: filePart.filename,
-        fileSize: buffer.length,
-        zohoAttachmentId: uploaded.id,
-        status: 'UPLOADED',
-        uploadedById: req.staffId,
-        uploadedAt: new Date(),
-        reviewedAt: null,
-        reviewNote: null,
-      },
-    });
-
-    await prisma.documentVersion.create({
-      data: {
-        documentId: documentRow.id,
-        versionNumber: nextVersionNumber,
-        fileName: filePart.filename,
-        fileSize: buffer.length,
-        zohoAttachmentId: uploaded.id,
-        uploadedById: req.staffId,
-        uploadedAt: documentRow.uploadedAt ?? new Date(),
-      },
+    const documentRow = await storeDocumentUpload({
+      zohoClient: app.zohoClient,
+      tenantConfig: app.tenantConfig,
+      contact,
+      journey: targetJourney,
+      key,
+      documentDef,
+      file: { buffer, filename: filePart.filename, mimetype: filePart.mimetype },
+      status: 'UPLOADED',
+      uploadedById: req.staffId,
     });
 
     await invalidateDocumentsCache(contact.id);
@@ -332,5 +246,77 @@ export async function registerStaffCustomerRoutes(app: FastifyInstance) {
     });
 
     return reply.code(200).send({ success: true });
+  });
+
+  // Manager queue: every customer-uploaded document still awaiting a
+  // decision, oldest first so nothing sits at the bottom forever.
+  app.get('/staff/approvals', { preHandler: requireManager }, async (_req, reply) => {
+    const rows = await prisma.document.findMany({
+      where: { status: 'PENDING_APPROVAL' },
+      include: { contact: true },
+      orderBy: { uploadedAt: 'asc' },
+    });
+    const displayNameByKey = new Map(app.tenantConfig.documents.stage_groups.flatMap((g) => g.documents.map((d) => [d.key, d.display_name] as const)));
+
+    return reply.code(200).send(
+      rows
+        .filter((r) => displayNameByKey.has(r.documentKey))
+        .map((r) => ({
+          contact_id: r.contactId,
+          customer_name: r.contact.fullName,
+          mobile_e164: r.contact.mobileE164,
+          key: r.documentKey,
+          display_name: displayNameByKey.get(r.documentKey)!,
+          file_name: r.fileName,
+          file_size: r.fileSize,
+          uploaded_at: r.uploadedAt,
+          zoho_attachment_id: r.zohoAttachmentId,
+        })),
+    );
+  });
+
+  app.post('/staff/customers/:contactId/documents/:key/review', { preHandler: requireManager }, async (req, reply) => {
+    const { contactId, key } = req.params as { contactId: string; key: string };
+    const parsed = reviewBodySchema.safeParse(req.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'INVALID_REQUEST' });
+    }
+
+    const documentRow = await prisma.document.findUnique({ where: { contactId_documentKey: { contactId, documentKey: key } } });
+    if (!documentRow) {
+      return reply.code(404).send({ error: 'NOT_FOUND' });
+    }
+    if (documentRow.status !== 'PENDING_APPROVAL') {
+      return reply.code(409).send({ error: 'NOT_PENDING_APPROVAL' });
+    }
+
+    const updated = await prisma.document.update({
+      where: { id: documentRow.id },
+      data: {
+        status: parsed.data.approved ? 'APPROVED' : 'REJECTED',
+        reviewedAt: new Date(),
+        reviewedById: req.staffId,
+        reviewNote: parsed.data.note ?? null,
+      },
+    });
+
+    await invalidateDocumentsCache(contactId);
+
+    const documentDef = findDocumentDef(app.tenantConfig, key);
+    const displayName = documentDef?.displayName ?? 'Your document';
+    // Best-effort, same as submit-for-review — never fails the review.
+    void sendPushToContact(
+      contactId,
+      parsed.data.approved ? 'Document approved' : 'Document needs attention',
+      parsed.data.approved ? `${displayName} has been approved.` : `${displayName} was not approved: ${parsed.data.note}`,
+      { screen: 'documents' },
+    );
+
+    return reply.code(200).send({
+      key: updated.documentKey,
+      status: updated.status,
+      reviewed_at: updated.reviewedAt,
+      review_note: updated.reviewNote,
+    });
   });
 }

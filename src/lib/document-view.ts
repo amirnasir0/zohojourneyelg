@@ -1,6 +1,6 @@
 import type { TenantConfig } from '../config/types.js';
 
-export type DocumentStatusValue = 'NOT_UPLOADED' | 'UPLOADED' | 'SUBMITTED_FOR_REVIEW' | 'APPROVED' | 'REJECTED';
+export type DocumentStatusValue = 'NOT_UPLOADED' | 'UPLOADED' | 'SUBMITTED_FOR_REVIEW' | 'PENDING_APPROVAL' | 'APPROVED' | 'REJECTED';
 
 export interface DocumentRowLike {
   documentKey: string;
@@ -37,7 +37,7 @@ export interface DocumentStageGroupView {
 
 // Empty group -> vacuously COMPLETED. requires_approval groups need every
 // document APPROVED; others just need every document past NOT_UPLOADED
-// (UPLOADED/SUBMITTED_FOR_REVIEW/APPROVED all count).
+// (UPLOADED/SUBMITTED_FOR_REVIEW/PENDING_APPROVAL/APPROVED all count).
 function computeGroupStatus(requiresApproval: boolean, items: DocumentItemView[]): 'COMPLETED' | 'PENDING' {
   if (items.length === 0) {
     return 'COMPLETED';
@@ -87,4 +87,38 @@ export function buildDocumentChecklist(tenantConfig: TenantConfig, rows: Documen
       documents,
     };
   });
+}
+
+export interface DocumentApprovalView {
+  key: string;
+  display_name: string;
+  approved_at: Date;
+  approved_by?: string | null;
+}
+
+/**
+ * The "approved" entries both journey timelines (customer and staff) show
+ * alongside the stage rows — document stage groups don't map onto journey
+ * stages one-to-one, so approvals are their own chronological list rather
+ * than being folded into a stage. Only configured keys are included, so a
+ * document key removed from tenant config disappears from the timeline too.
+ * includeReviewer adds the approving manager's name for the staff app.
+ */
+export function buildDocumentApprovals(
+  tenantConfig: TenantConfig,
+  rows: (DocumentRowLike & { reviewedBy?: { fullName: string | null; email: string } | null })[],
+  includeReviewer: boolean,
+): DocumentApprovalView[] {
+  const displayNameByKey = new Map(tenantConfig.documents.stage_groups.flatMap((g) => g.documents.map((d) => [d.key, d.display_name] as const)));
+
+  return rows
+    .filter((r) => r.status === 'APPROVED' && r.reviewedAt && displayNameByKey.has(r.documentKey))
+    .sort((a, b) => a.reviewedAt!.getTime() - b.reviewedAt!.getTime())
+    .map((r) => {
+      const item: DocumentApprovalView = { key: r.documentKey, display_name: displayNameByKey.get(r.documentKey)!, approved_at: r.reviewedAt! };
+      if (includeReviewer) {
+        item.approved_by = r.reviewedBy ? (r.reviewedBy.fullName ?? r.reviewedBy.email) : null;
+      }
+      return item;
+    });
 }

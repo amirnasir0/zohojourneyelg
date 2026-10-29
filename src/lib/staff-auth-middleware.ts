@@ -51,3 +51,26 @@ export async function requireAdmin(req: FastifyRequest, reply: FastifyReply): Pr
     reply.code(403).send({ error: 'FORBIDDEN' });
   }
 }
+
+/**
+ * Role gate for document approval — MANAGER, plus ADMIN (who can already
+ * do everything a manager can). Same 403-not-404 reasoning as requireAdmin.
+ */
+export async function requireManager(req: FastifyRequest, reply: FastifyReply): Promise<void> {
+  await requireStaffAuth(req, reply);
+  if (reply.sent) {
+    return;
+  }
+  if (!seesAllCustomers(req.staffRole)) {
+    reply.code(403).send({ error: 'FORBIDDEN' });
+  }
+}
+
+/**
+ * ADMIN and MANAGER both see every customer (a manager has to be able to
+ * approve anyone's documents); only EMPLOYEE is scoped to their own
+ * zoho_owner_id.
+ */
+export function seesAllCustomers(staffRole: string): boolean {
+  return staffRole === 'ADMIN' || staffRole === 'MANAGER';
+}

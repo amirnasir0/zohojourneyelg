@@ -188,13 +188,15 @@ own JWT audience so a customer token can never authenticate a staff route or vic
 | id | uuid PK | |
 | email | text unique | |
 | password_hash | text | bcrypt |
-| role | enum(admin, employee) | |
+| role | enum(admin, manager, employee) | manager: sees every customer + approves customer-uploaded documents (§11.5), no user management |
 | zoho_owner_id | text, nullable | matches a journey's `owner_zoho_id`; null for admins (who see every customer regardless) |
 | full_name | text, nullable | |
 | active | boolean, default true | |
 | created_at | timestamptz | |
 
 `staff_sessions` mirrors `sessions` exactly (`staff_id` FK, `jti` unique, `expires_at`, `revoked_at`).
+Passwords are only ever stored hashed — a forgotten one is replaced via the admin-only
+`POST /staff/users/:id/password` (§11.5), which also revokes every live session for that account.
 
 ### documents  *(staff-uploaded, customer-tracked — see §11.5)*
 One row per (contact, document_key), created lazily on first staff upload — never pre-seeded
@@ -210,10 +212,11 @@ placeholder for any configured key with no row yet.
 | stage_group_key | text | which stage-group this document belongs to |
 | file_name / file_size | text / int, nullable | |
 | zoho_attachment_id | text, nullable | the Zoho CRM Attachment id — the file's bytes live in Zoho, not this DB |
-| status | enum(not_uploaded, uploaded, submitted_for_review, approved, rejected) | |
-| uploaded_by | uuid FK (staff_users), nullable | |
+| status | enum(not_uploaded, uploaded, submitted_for_review, pending_approval, approved, rejected) | `pending_approval` = customer-uploaded, awaiting a manager (§11.5) |
+| uploaded_by | uuid FK (staff_users), nullable | null for a customer's own upload |
 | uploaded_at / reviewed_at | timestamptz, nullable | |
-| review_note | text, nullable | set when a customer rejects, read by staff as "changes requested" |
+| review_note | text, nullable | set when a customer or manager rejects — the reason the other side acts on |
+| reviewed_by | uuid FK (staff_users), nullable | the manager who approved/rejected a customer upload; null for a customer's own review |
 
 ## 8. Phone Normalization (critical spec)
 
@@ -343,6 +346,20 @@ them in the main app.
   `approved: false` → back to `uploaded` (kicked back to staff, with `review_note` staff can
   read as "changes requested"). `pending_customer_review` clears once no document remains
   `submitted_for_review` for that contact.
+- **Customer uploads + manager approval** *(added 2026-10-29)*: the reverse direction. A
+  customer uploads a document themselves (`POST /me/documents/:key/upload`, multipart — same
+  Zoho Attachment push and versioning as the staff upload; the reviewer/demo account never
+  reaches Zoho) and it lands as `pending_approval`. An already-`approved` document can't be
+  replaced by the customer (409 `ALREADY_APPROVED`). A `manager` (or `admin`) works the queue
+  at `GET /staff/approvals` and decides with `POST
+  /staff/customers/:contactId/documents/:key/review` (`approved`, `note` required to reject)
+  → `approved` / `rejected`, recording `reviewed_by`; the customer gets a push either way.
+  Managers, like admins, are not `owner_zoho_id`-scoped.
+- **Timeline:** `GET /me/journeys/:id` and `GET /staff/customers/:contactId/journey` both
+  return `document_approvals` — every `approved` document (oldest first) as `{key,
+  display_name, approved_at}`, plus `approved_by` on the staff variant. Document stage-groups
+  don't map one-to-one onto journey stages, so approvals are their own list rather than being
+  folded into a stage row.
 
 ## 12. Performance Targets
 
